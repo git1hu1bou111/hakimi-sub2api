@@ -220,6 +220,35 @@ func TestForwardAsRawChatCompletions_NormalizesMissingGrokToolType(t *testing.T)
 	require.Equal(t, "get_weather", gjson.GetBytes(upstream.lastBody, "tools.0.function.name").String())
 }
 
+func TestForwardAsRawChatCompletions_MarkedGrok502RetriesSamePoolAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"grok upstream temporary error"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Platform = PlatformGrok
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_status_codes"] = []int{401, 403, 429, 502, 503}
+	account.Credentials["grok_gateway_transient_errors_do_not_block"] = true
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+}
+
 func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

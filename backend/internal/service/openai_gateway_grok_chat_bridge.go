@@ -623,7 +623,7 @@ func (s *OpenAIGatewayService) forwardGrokChatCompletionsViaResponses(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				ResponseHeaders:        resp.Header.Clone(),
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: isGrokAPIKeyGatewayTransientRetryableOnSameAccount(account, resp.StatusCode),
 			}
 		}
 		return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)

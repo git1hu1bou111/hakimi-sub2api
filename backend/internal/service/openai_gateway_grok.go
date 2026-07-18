@@ -149,7 +149,7 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				ResponseHeaders:        resp.Header.Clone(),
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: isGrokAPIKeyGatewayTransientRetryableOnSameAccount(account, resp.StatusCode),
 			}
 		}
 		return s.handleErrorResponse(ctx, resp, c, account, patchedBody, upstreamModel)
@@ -871,7 +871,7 @@ func (s *OpenAIGatewayService) describeGrokComposerImage(
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
 				ResponseHeaders:        resp.Header.Clone(),
-				RetryableOnSameAccount: account.IsPoolMode() && account.IsPoolModeRetryableStatus(resp.StatusCode),
+				RetryableOnSameAccount: isGrokAPIKeyGatewayTransientRetryableOnSameAccount(account, resp.StatusCode),
 			}
 		}
 		return "", OpenAIUsage{}, fmt.Errorf("grok composer image bridge upstream error: %s", upstreamMsg)
@@ -1298,6 +1298,13 @@ func isGrokAPIKeyGatewayTransientStatus(account *Account, statusCode int) bool {
 	default:
 		return false
 	}
+}
+
+func isGrokAPIKeyGatewayTransientRetryableOnSameAccount(account *Account, statusCode int) bool {
+	if account == nil || !account.IsPoolMode() {
+		return false
+	}
+	return account.IsPoolModeRetryableStatus(statusCode) || isGrokAPIKeyGatewayTransientStatus(account, statusCode)
 }
 
 func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) {

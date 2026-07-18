@@ -2487,6 +2487,29 @@ func TestGrokAPIKeyGatewayTransientStatusIsolationRequiresExplicitAccountFlag(t 
 	))
 }
 
+func TestGrokAPIKeyGatewayTransientSameAccountRetryRequiresPoolAndExplicitFlag(t *testing.T) {
+	markedPool := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode":                                  true,
+			"pool_mode_retry_status_codes":               []int{401, 403, 429, 502, 503},
+			"grok_gateway_transient_errors_do_not_block": true,
+		},
+	}
+
+	require.True(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
+	require.True(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusServiceUnavailable))
+	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusGatewayTimeout))
+
+	markedPool.Credentials["pool_mode"] = false
+	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
+
+	markedPool.Credentials["pool_mode"] = true
+	delete(markedPool.Credentials, "grok_gateway_transient_errors_do_not_block")
+	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
+}
+
 func TestHandleGrokAccountUpstreamError429UsesLatestExhaustedWindowReset(t *testing.T) {
 	now := time.Now()
 	requestReset := now.Add(10 * time.Minute).Truncate(time.Second)
