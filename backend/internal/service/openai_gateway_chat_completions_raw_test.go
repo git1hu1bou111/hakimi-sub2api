@@ -155,6 +155,71 @@ func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T)
 	require.Equal(t, "max", *result.ReasoningEffort)
 }
 
+func TestNormalizeGrokRawChatToolTypes(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model":"grok-4.5",
+		"tools":[
+			{"function":{"name":"lookup","description":"look up a value","parameters":{"type":"object"}}},
+			{"type":"function","function":{"name":"save","parameters":{"type":"object"}}},
+			{"description":"invalid typeless tool"}
+		],
+		"tool_choice":"auto"
+	}`)
+
+	normalized, err := normalizeGrokRawChatToolTypes(body)
+	require.NoError(t, err)
+	require.True(t, gjson.ValidBytes(normalized))
+	require.Len(t, gjson.GetBytes(normalized, "tools").Array(), 2)
+	require.Equal(t, "function", gjson.GetBytes(normalized, "tools.0.type").String())
+	require.Equal(t, "lookup", gjson.GetBytes(normalized, "tools.0.function.name").String())
+	require.Equal(t, "function", gjson.GetBytes(normalized, "tools.1.type").String())
+	require.Equal(t, "auto", gjson.GetBytes(normalized, "tool_choice").String())
+}
+
+func TestNormalizeGrokRawChatToolTypesDropsOnlyInvalidTools(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeGrokRawChatToolTypes([]byte(`{
+		"model":"grok-4.5",
+		"tools":[{"description":"missing type and function"}],
+		"tool_choice":{"type":"function","function":{"name":"missing"}}
+	}`))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(normalized, "tools").Exists())
+	require.False(t, gjson.GetBytes(normalized, "tool_choice").Exists())
+}
+
+func TestForwardAsRawChatCompletions_NormalizesMissingGrokToolType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"weather"}],"tools":[{"function":{"name":"get_weather","parameters":{"type":"object"}}}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_grok_tool","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Platform = PlatformGrok
+	account.Credentials["model_mapping"] = map[string]any{"grok-4.5": "grok-4.5"}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "function", gjson.GetBytes(upstream.lastBody, "tools.0.type").String())
+	require.Equal(t, "get_weather", gjson.GetBytes(upstream.lastBody, "tools.0.function.name").String())
+}
+
 func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

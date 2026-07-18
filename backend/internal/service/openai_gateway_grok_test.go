@@ -2413,6 +2413,80 @@ func TestHandleGrokAccountUpstreamError429SetsRateLimitedFromRetryAfter(t *testi
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
+func TestHandleGrokAPIKeyGatewayTransientStatusDoesNotWriteAccountSchedulingState(t *testing.T) {
+	for _, statusCode := range []int{
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			account := &Account{
+				ID:       63,
+				Platform: PlatformGrok,
+				Type:     AccountTypeAPIKey,
+				Credentials: map[string]any{
+					"grok_gateway_transient_errors_do_not_block": true,
+				},
+			}
+			repo := &grokQuotaAccountRepo{}
+			svc := &OpenAIGatewayService{
+				accountRepo:      repo,
+				rateLimitService: &RateLimitService{accountRepo: repo},
+			}
+
+			svc.handleGrokAccountUpstreamError(
+				context.Background(),
+				account,
+				statusCode,
+				http.Header{"Retry-After": []string{"120"}},
+				nil,
+			)
+			shouldDisable := svc.handleOpenAIAccountUpstreamError(
+				context.Background(),
+				account,
+				statusCode,
+				http.Header{"Retry-After": []string{"120"}},
+				nil,
+			)
+
+			require.False(t, shouldDisable)
+			require.Zero(t, repo.updateCalls)
+			require.Zero(t, repo.tempUnschedCalls)
+			require.Zero(t, repo.rateLimitedCalls)
+			require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+		})
+	}
+}
+
+func TestGrokAPIKeyGatewayTransientStatusIsolationRequiresExplicitAccountFlag(t *testing.T) {
+	marked := &Account{
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"grok_gateway_transient_errors_do_not_block": true,
+		},
+	}
+
+	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusTooManyRequests))
+	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusBadGateway))
+	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusServiceUnavailable))
+	require.False(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusGatewayTimeout))
+	require.False(t, isGrokAPIKeyGatewayTransientStatus(
+		&Account{Platform: PlatformGrok, Type: AccountTypeAPIKey},
+		http.StatusTooManyRequests,
+	))
+	require.False(t, isGrokAPIKeyGatewayTransientStatus(
+		&Account{
+			Platform: PlatformGrok,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"grok_gateway_transient_errors_do_not_block": true,
+			},
+		},
+		http.StatusTooManyRequests,
+	))
+}
+
 func TestHandleGrokAccountUpstreamError429UsesLatestExhaustedWindowReset(t *testing.T) {
 	now := time.Now()
 	requestReset := now.Add(10 * time.Minute).Truncate(time.Second)

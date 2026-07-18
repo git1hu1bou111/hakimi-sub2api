@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -144,6 +145,10 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		if err != nil {
 			return nil, fmt.Errorf("remove Responses-only Grok prompt cache key: %w", err)
 		}
+		upstreamBody, err = normalizeGrokRawChatToolTypes(upstreamBody)
+		if err != nil {
+			return nil, fmt.Errorf("normalize Grok chat tool types: %w", err)
+		}
 	}
 
 	logger.L().Debug("openai chat_completions raw: forwarding without protocol conversion",
@@ -217,6 +222,96 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 		result.UpstreamEndpoint = grokChatRawEndpoint
 	}
 	return result, forwardErr
+}
+
+func sanitizeGrokRawChatBody(body []byte) ([]byte, error) {
+	out, err := sanitizeGrokPenaltyFields(body)
+	if err != nil {
+		return nil, err
+	}
+
+	tools := gjson.GetBytes(out, "tools")
+	if tools.Exists() && tools.Type != gjson.Null && (!tools.IsArray() || len(tools.Array()) > 0) {
+		return out, nil
+	}
+	choice := gjson.GetBytes(out, "tool_choice")
+	if !choice.Exists() {
+		return out, nil
+	}
+	if choice.Type == gjson.Null {
+		return sjson.DeleteBytes(out, "tool_choice")
+	}
+	if choice.Type != gjson.String {
+		return out, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(choice.String())) {
+	case "auto", "none":
+		return sjson.DeleteBytes(out, "tool_choice")
+	default:
+		return out, nil
+	}
+}
+
+// normalizeGrokRawChatToolTypes repairs a common legacy Chat Completions
+// payload where a function tool is encoded as {"function": {...}} without the
+// required top-level "type":"function" discriminator. Cascaded Grok gateways
+// convert these tools to Responses format, where xAI rejects the empty type
+// with HTTP 422. Invalid typeless entries are dropped instead of forwarding a
+// payload that is guaranteed to fail deserialization.
+func normalizeGrokRawChatToolTypes(body []byte) ([]byte, error) {
+	tools := gjson.GetBytes(body, "tools")
+	if !tools.Exists() || !tools.IsArray() {
+		return body, nil
+	}
+
+	rawTools := tools.Array()
+	normalized := make([]json.RawMessage, 0, len(rawTools))
+	changed := false
+	for _, tool := range rawTools {
+		if !tool.IsObject() {
+			changed = true
+			continue
+		}
+
+		raw := []byte(tool.Raw)
+		if strings.TrimSpace(tool.Get("type").String()) == "" {
+			function := tool.Get("function")
+			if !function.IsObject() || strings.TrimSpace(function.Get("name").String()) == "" {
+				changed = true
+				continue
+			}
+			var err error
+			raw, err = sjson.SetBytes(raw, "type", "function")
+			if err != nil {
+				return nil, err
+			}
+			changed = true
+		}
+		normalized = append(normalized, json.RawMessage(raw))
+	}
+
+	if !changed {
+		return body, nil
+	}
+	if len(normalized) == 0 {
+		out, err := sjson.DeleteBytes(body, "tools")
+		if err != nil {
+			return nil, err
+		}
+		if gjson.GetBytes(out, "tool_choice").Exists() {
+			out, err = sjson.DeleteBytes(out, "tool_choice")
+			if err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
+	}
+
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	return sjson.SetRawBytes(body, "tools", encoded)
 }
 
 func (s *OpenAIGatewayService) rawChatCompletionsURL(account *Account) (string, error) {

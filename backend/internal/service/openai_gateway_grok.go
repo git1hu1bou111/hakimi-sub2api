@@ -1284,8 +1284,27 @@ func (s *OpenAIGatewayService) rateLimitGrok(ctx context.Context, account *Accou
 	persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
 }
 
+func isGrokAPIKeyGatewayTransientStatus(account *Account, statusCode int) bool {
+	if account == nil || account.Platform != PlatformGrok || account.Type != AccountTypeAPIKey {
+		return false
+	}
+	enabled, _ := account.Credentials["grok_gateway_transient_errors_do_not_block"].(bool)
+	if !enabled {
+		return false
+	}
+	switch statusCode {
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *OpenAIGatewayService) handleGrokAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) {
 	if s == nil || account == nil {
+		return
+	}
+	if isGrokAPIKeyGatewayTransientStatus(account, statusCode) {
 		return
 	}
 	now := time.Now()
