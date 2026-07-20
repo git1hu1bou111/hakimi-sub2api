@@ -224,34 +224,6 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	return result, forwardErr
 }
 
-func sanitizeGrokRawChatBody(body []byte) ([]byte, error) {
-	out, err := sanitizeGrokPenaltyFields(body)
-	if err != nil {
-		return nil, err
-	}
-
-	tools := gjson.GetBytes(out, "tools")
-	if tools.Exists() && tools.Type != gjson.Null && (!tools.IsArray() || len(tools.Array()) > 0) {
-		return out, nil
-	}
-	choice := gjson.GetBytes(out, "tool_choice")
-	if !choice.Exists() {
-		return out, nil
-	}
-	if choice.Type == gjson.Null {
-		return sjson.DeleteBytes(out, "tool_choice")
-	}
-	if choice.Type != gjson.String {
-		return out, nil
-	}
-	switch strings.ToLower(strings.TrimSpace(choice.String())) {
-	case "auto", "none":
-		return sjson.DeleteBytes(out, "tool_choice")
-	default:
-		return out, nil
-	}
-}
-
 // normalizeGrokRawChatToolTypes repairs a common legacy Chat Completions
 // payload where a function tool is encoded as {"function": {...}} without the
 // required top-level "type":"function" discriminator. Cascaded Grok gateways
