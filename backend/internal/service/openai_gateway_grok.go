@@ -1293,7 +1293,7 @@ func isGrokAPIKeyGatewayTransientStatus(account *Account, statusCode int) bool {
 		return false
 	}
 	switch statusCode {
-	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable:
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
 	default:
 		return false

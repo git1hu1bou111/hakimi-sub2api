@@ -2418,6 +2418,7 @@ func TestHandleGrokAPIKeyGatewayTransientStatusDoesNotWriteAccountSchedulingStat
 		http.StatusTooManyRequests,
 		http.StatusBadGateway,
 		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
 	} {
 		t.Run(http.StatusText(statusCode), func(t *testing.T) {
 			account := &Account{
@@ -2470,7 +2471,7 @@ func TestGrokAPIKeyGatewayTransientStatusIsolationRequiresExplicitAccountFlag(t 
 	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusTooManyRequests))
 	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusBadGateway))
 	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusServiceUnavailable))
-	require.False(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusGatewayTimeout))
+	require.True(t, isGrokAPIKeyGatewayTransientStatus(marked, http.StatusGatewayTimeout))
 	require.False(t, isGrokAPIKeyGatewayTransientStatus(
 		&Account{Platform: PlatformGrok, Type: AccountTypeAPIKey},
 		http.StatusTooManyRequests,
@@ -2500,7 +2501,7 @@ func TestGrokAPIKeyGatewayTransientSameAccountRetryRequiresPoolAndExplicitFlag(t
 
 	require.True(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
 	require.True(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusServiceUnavailable))
-	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusGatewayTimeout))
+	require.True(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusGatewayTimeout))
 
 	markedPool.Credentials["pool_mode"] = false
 	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
