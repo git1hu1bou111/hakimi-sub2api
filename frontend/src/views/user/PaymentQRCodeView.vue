@@ -69,7 +69,9 @@ let verifyAttempts = 0
 let lastVerifyAt = 0
 
 const VERIFY_RETRY_INTERVAL_MS = 5000
-const VERIFY_RETRY_MAX_ATTEMPTS = 24
+// Keep active upstream reconciliation alive for a typical 30-minute checkout
+// window so delayed scans do not fall back to the slower background job.
+const VERIFY_RETRY_MAX_ATTEMPTS = 360
 
 const countdownDisplay = computed(() => {
   const m = Math.floor(remainingSeconds.value / 60)
@@ -163,7 +165,7 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
 
 async function pollStatus() {
   if (!orderId.value) return
-  // Avoid overlapping local/upstream polls when a request takes longer than the 3s interval.
+  // Avoid overlapping local/upstream polls when a request takes longer than the 2s interval.
   if (pollInFlight) return
   pollInFlight = true
   try {

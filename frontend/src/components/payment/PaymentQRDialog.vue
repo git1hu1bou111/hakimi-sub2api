@@ -121,7 +121,9 @@ let lastVerifyAt = 0
 let pollInFlight = false
 
 const VERIFY_RETRY_INTERVAL_MS = 5000
-const VERIFY_RETRY_MAX_ATTEMPTS = 24
+// Keep active upstream reconciliation alive for a typical 30-minute checkout
+// window so delayed scans do not fall back to the slower background job.
+const VERIFY_RETRY_MAX_ATTEMPTS = 360
 
 const isAlipay = computed(() => isBuiltInAlipayMethod(props.paymentType))
 const isWxpay = computed(() => isBuiltInWxpayMethod(props.paymentType))

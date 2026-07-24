@@ -145,11 +145,12 @@ const props = defineProps<{
   payUrl?: string
   orderType?: string
   currency?: string
+  paymentMode?: string
 }>()
 
 type PaymentOutcome = 'success' | 'cancelled' | 'expired'
 
-const emit = defineEmits<{ done: []; success: []; settled: [outcome: PaymentOutcome] }>()
+const emit = defineEmits<{ done: []; success: []; settled: [outcome: PaymentOutcome]; restart: [] }>()
 
 const i18n = useI18n()
 const { t } = i18n
@@ -181,7 +182,9 @@ let verifyAttempts = 0
 let lastVerifyAt = 0
 
 const VERIFY_RETRY_INTERVAL_MS = 5000
-const VERIFY_RETRY_MAX_ATTEMPTS = 24
+// Keep active upstream reconciliation alive for a typical 30-minute checkout
+// window so delayed scans do not fall back to the slower background job.
+const VERIFY_RETRY_MAX_ATTEMPTS = 360
 
 const isAlipay = computed(() => isBuiltInAlipayMethod(props.paymentType))
 const isWxpay = computed(() => isBuiltInWxpayMethod(props.paymentType))
@@ -231,6 +234,10 @@ function isSuccessStatus(status: string | null | undefined): boolean {
 }
 
 function reopenPopup() {
+  if (String(props.paymentMode || '').trim().toLowerCase() === 'popup') {
+    emit('restart')
+    return
+  }
   if (props.payUrl) {
     const win = window.open(props.payUrl, 'paymentPopup', getPaymentPopupFeatures())
     if (!win || win.closed) {
@@ -277,7 +284,7 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
 let pollInFlight = false
 async function pollStatus() {
   if (!props.orderId || outcome.value) return
-  // Avoid overlapping local/upstream polls when a request takes longer than the 3s interval.
+  // Avoid overlapping local/upstream polls when a request takes longer than the 2s interval.
   if (pollInFlight) return
   pollInFlight = true
   try {

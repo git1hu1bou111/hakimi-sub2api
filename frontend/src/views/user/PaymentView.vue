@@ -21,10 +21,12 @@
             :payment-type="paymentState.paymentType"
             :pay-url="paymentState.payUrl"
             :order-type="paymentState.orderType"
+            :payment-mode="paymentState.paymentMode"
             :currency="paymentState.currency || selectedCurrency"
             @done="onPaymentDone"
             @success="onPaymentSuccess"
             @settled="onPaymentSettled"
+            @restart="onPaymentRestart"
           />
         </template>
         <!-- Tab content (select phase) -->
@@ -489,6 +491,100 @@ function onPaymentSuccess() {
 
 function onPaymentSettled() {
   removeRecoverySnapshot()
+}
+
+function isPaidOrderStatus(status: string | null | undefined): boolean {
+  switch (String(status || '').trim().toUpperCase()) {
+    case 'PAID':
+    case 'COMPLETED':
+    case 'RECHARGING':
+    case 'REFUND_REQUESTED':
+    case 'REFUNDING':
+    case 'REFUND_PENDING':
+    case 'PARTIALLY_REFUNDED':
+    case 'REFUNDED':
+    case 'REFUND_FAILED':
+      return true
+    default:
+      return false
+  }
+}
+
+async function onPaymentRestart() {
+  if (submitting.value) return
+  submitting.value = true
+
+  try {
+    const current = paymentState.value
+    const restartType = normalizeVisibleMethod(current.paymentType || selectedMethod.value) || current.paymentType || selectedMethod.value
+    const restartOrderType: OrderType = current.orderType === 'subscription' || (!current.orderType && activeTab.value === 'subscription')
+      ? 'subscription'
+      : 'balance'
+    const restartAmount = Number(current.amount || validAmount.value || 0)
+    const restartPlan = restartOrderType === 'subscription' ? selectedPlan.value : null
+    const restartPlanID = restartPlan?.id
+
+    const redirectCurrentOrderResult = async () => {
+      await redirectToPaymentResult(current)
+    }
+    const verifyCurrentOrderPaid = async (): Promise<boolean> => {
+      if (!current.outTradeNo) return false
+      try {
+        const verified = await paymentAPI.verifyOrder(current.outTradeNo)
+        if (!isPaidOrderStatus(verified.data?.status)) {
+          return false
+        }
+        await redirectToPaymentResult({
+          ...current,
+          orderId: verified.data?.id || current.orderId,
+          outTradeNo: verified.data?.out_trade_no || current.outTradeNo,
+        })
+        return true
+      } catch {
+        // If active verification fails, continue with a new order number for the
+        // popup retry. Late payment on the old order can still be recovered by
+        // webhook/query reconciliation without duplicate fulfillment.
+        return false
+      }
+    }
+
+    if (await verifyCurrentOrderPaid()) return
+
+    if (restartOrderType === 'subscription' && !restartPlanID) {
+      resetPayment()
+      appStore.showError(t('payment.errors.PLAN_NOT_AVAILABLE'))
+      return
+    }
+    if (restartOrderType === 'balance' && restartAmount <= 0) {
+      resetPayment()
+      appStore.showError(t('payment.errors.INVALID_AMOUNT'))
+      return
+    }
+
+    if (current.orderId) {
+      try {
+        const cancelled = await paymentAPI.cancelOrder(current.orderId) as { data?: { message?: string } }
+        if (String(cancelled.data?.message || '').trim() === 'already_paid') {
+          await redirectCurrentOrderResult()
+          return
+        }
+      } catch {
+        // Best-effort only. Re-check once to catch a race where the old order
+        // became paid between the preflight verify and cancel request.
+        if (await verifyCurrentOrderPaid()) return
+      }
+    }
+
+    removeRecoverySnapshot()
+    await createOrder(
+      restartOrderType === 'subscription' ? restartPlan!.price : restartAmount,
+      restartOrderType as OrderType,
+      restartPlanID,
+      { paymentType: restartType },
+    )
+  } finally {
+    submitting.value = false
+  }
 }
 
 // All checkout data from single API call

@@ -20,7 +20,10 @@ const showError = vi.hoisted(() => vi.fn())
 const showInfo = vi.hoisted(() => vi.fn())
 const showWarning = vi.hoisted(() => vi.fn())
 const getCheckoutInfo = vi.hoisted(() => vi.fn())
+const verifyOrder = vi.hoisted(() => vi.fn())
+const cancelOrder = vi.hoisted(() => vi.fn())
 const bridgeInvoke = vi.hoisted(() => vi.fn())
+const isMobileDevice = vi.hoisted(() => vi.fn(() => true))
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -79,11 +82,13 @@ vi.mock('@/stores', () => ({
 vi.mock('@/api/payment', () => ({
   paymentAPI: {
     getCheckoutInfo,
+    verifyOrder,
+    cancelOrder,
   },
 }))
 
 vi.mock('@/utils/device', () => ({
-  isMobileDevice: () => true,
+  isMobileDevice,
 }))
 
 function checkoutInfoFixture(overrides: Partial<CheckoutInfoResponse> = {}) {
@@ -215,6 +220,9 @@ async function mountSubscriptionConfirm(options: Parameters<typeof checkoutInfoW
   showError.mockReset()
   showInfo.mockReset()
   showWarning.mockReset()
+  verifyOrder.mockReset()
+  cancelOrder.mockReset()
+  isMobileDevice.mockReset().mockReturnValue(true)
   getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoWithPlansFixture(options))
   bridgeInvoke.mockReset()
   window.localStorage.clear()
@@ -340,6 +348,9 @@ describe('PaymentView payment recovery', () => {
     showError.mockReset()
     showInfo.mockReset()
     showWarning.mockReset()
+    verifyOrder.mockReset()
+    cancelOrder.mockReset()
+    isMobileDevice.mockReset().mockReturnValue(true)
     bridgeInvoke.mockReset()
     window.localStorage.clear()
     ;(window as Window & { WeixinJSBridge?: { invoke: typeof bridgeInvoke } }).WeixinJSBridge = undefined
@@ -406,6 +417,219 @@ describe('PaymentView payment recovery', () => {
 
     expect(wrapper.find('[data-test="method-selector"]').text()).toBe('ldc')
   })
+
+  it('creates a fresh popup order instead of reusing a closed EasyPay submit URL', async () => {
+    isMobileDevice.mockReturnValue(false)
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    verifyOrder.mockResolvedValue({
+      data: {
+        id: 888,
+        out_trade_no: 'sub2_old',
+        status: 'PENDING',
+      },
+    })
+    cancelOrder.mockResolvedValue({ data: { message: 'cancelled' } })
+    createOrder.mockResolvedValue({
+      order_id: 889,
+      amount: 66,
+      pay_amount: 66,
+      fee_rate: 0,
+      expires_at: '2099-01-01T00:10:00.000Z',
+      payment_type: 'alipay',
+      pay_url: 'https://pay.example.com/submit.php?out_trade_no=sub2_new',
+      out_trade_no: 'sub2_new',
+      payment_mode: 'popup',
+    })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+    const oldUrl = 'https://pay.example.com/submit.php?out_trade_no=sub2_old'
+    window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify({
+      orderId: 888,
+      amount: 66,
+      qrCode: '',
+      expiresAt: '2099-01-01T00:10:00.000Z',
+      paymentType: 'alipay',
+      payUrl: oldUrl,
+      outTradeNo: 'sub2_old',
+      clientSecret: '',
+      intentId: '',
+      currency: '',
+      countryCode: '',
+      paymentEnv: '',
+      payAmount: 66,
+      orderType: 'balance',
+      paymentMode: 'popup',
+      resumeToken: '',
+      createdAt: Date.now(),
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+          PaymentStatusPanel: {
+            template: '<button data-test="payment-restart" @click="$emit(\'restart\')" />',
+          },
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    await wrapper.find('[data-test="payment-restart"]').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(verifyOrder).toHaveBeenCalledWith('sub2_old')
+    expect(cancelOrder).toHaveBeenCalledWith(888)
+    expect(createOrder).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 66,
+      payment_type: 'alipay',
+      order_type: 'balance',
+      is_mobile: false,
+    }))
+    expect(openSpy).toHaveBeenCalledWith(
+      'https://pay.example.com/submit.php?out_trade_no=sub2_new',
+      'paymentPopup',
+      expect.any(String),
+    )
+    expect(openSpy.mock.calls.some(([url]) => url === oldUrl)).toBe(false)
+
+    openSpy.mockRestore()
+  })
+
+  it('does not create a new popup order when the old order is already paid', async () => {
+    isMobileDevice.mockReturnValue(false)
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    verifyOrder.mockResolvedValue({
+      data: {
+        id: 888,
+        out_trade_no: 'sub2_old',
+        status: 'COMPLETED',
+      },
+    })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+    window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify({
+      orderId: 888,
+      amount: 66,
+      qrCode: '',
+      expiresAt: '2099-01-01T00:10:00.000Z',
+      paymentType: 'alipay',
+      payUrl: 'https://pay.example.com/submit.php?out_trade_no=sub2_old',
+      outTradeNo: 'sub2_old',
+      clientSecret: '',
+      intentId: '',
+      currency: '',
+      countryCode: '',
+      paymentEnv: '',
+      payAmount: 66,
+      orderType: 'balance',
+      paymentMode: 'popup',
+      resumeToken: '',
+      createdAt: Date.now(),
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+          PaymentStatusPanel: {
+            template: '<button data-test="payment-restart" @click="$emit(\'restart\')" />',
+          },
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    await wrapper.find('[data-test="payment-restart"]').trigger('click')
+    await flushPromises()
+
+    expect(verifyOrder).toHaveBeenCalledWith('sub2_old')
+    expect(cancelOrder).not.toHaveBeenCalled()
+    expect(createOrder).not.toHaveBeenCalled()
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: {
+        order_id: '888',
+        out_trade_no: 'sub2_old',
+      },
+    })
+
+    openSpy.mockRestore()
+  })
+
+  it('does not create a new popup order when cancel detects a just-paid order', async () => {
+    isMobileDevice.mockReturnValue(false)
+    getCheckoutInfo.mockResolvedValue(checkoutInfoFixture())
+    verifyOrder.mockResolvedValue({
+      data: {
+        id: 888,
+        out_trade_no: 'sub2_old',
+        status: 'PENDING',
+      },
+    })
+    cancelOrder.mockResolvedValue({ data: { message: 'already_paid' } })
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+    window.localStorage.setItem(PAYMENT_RECOVERY_STORAGE_KEY, JSON.stringify({
+      orderId: 888,
+      amount: 66,
+      qrCode: '',
+      expiresAt: '2099-01-01T00:10:00.000Z',
+      paymentType: 'alipay',
+      payUrl: 'https://pay.example.com/submit.php?out_trade_no=sub2_old',
+      outTradeNo: 'sub2_old',
+      clientSecret: '',
+      intentId: '',
+      currency: '',
+      countryCode: '',
+      paymentEnv: '',
+      payAmount: 66,
+      orderType: 'balance',
+      paymentMode: 'popup',
+      resumeToken: '',
+      createdAt: Date.now(),
+    }))
+
+    const wrapper = shallowMount(PaymentView, {
+      global: {
+        stubs: {
+          AppLayout: {
+            template: '<div><slot /></div>',
+          },
+          PaymentStatusPanel: {
+            template: '<button data-test="payment-restart" @click="$emit(\'restart\')" />',
+          },
+          Teleport: true,
+          Transition: false,
+        },
+      },
+    })
+    await flushPromises()
+    await flushPromises()
+    await wrapper.find('[data-test="payment-restart"]').trigger('click')
+    await flushPromises()
+
+    expect(verifyOrder).toHaveBeenCalledWith('sub2_old')
+    expect(cancelOrder).toHaveBeenCalledWith(888)
+    expect(createOrder).not.toHaveBeenCalled()
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(routerPush).toHaveBeenCalledWith({
+      path: '/payment/result',
+      query: {
+        order_id: '888',
+        out_trade_no: 'sub2_old',
+      },
+    })
+
+    openSpy.mockRestore()
+  })
 })
 
 describe('PaymentView WeChat JSAPI flow', () => {
@@ -424,6 +648,9 @@ describe('PaymentView WeChat JSAPI flow', () => {
     showError.mockReset()
     showInfo.mockReset()
     showWarning.mockReset()
+    verifyOrder.mockReset()
+    cancelOrder.mockReset()
+    isMobileDevice.mockReset().mockReturnValue(true)
     getCheckoutInfo.mockReset().mockResolvedValue(checkoutInfoFixture())
     bridgeInvoke.mockReset()
     window.localStorage.clear()

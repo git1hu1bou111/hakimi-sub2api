@@ -132,6 +132,35 @@ describe('PaymentStatusPanel', () => {
     openSpy.mockRestore()
   })
 
+  it('emits restart instead of reopening the old submit URL in popup mode', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: '',
+        payUrl: 'https://pay.example.com/submit.php?out_trade_no=sub2_42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'alipay',
+        paymentMode: 'popup',
+        orderType: 'balance',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('button.btn.btn-secondary.text-sm').trigger('click')
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.emitted('restart')).toHaveLength(1)
+
+    openSpy.mockRestore()
+  })
+
   it('uses generic QR copy for custom methods that contain built-in names', async () => {
     const wrapper = mount(PaymentStatusPanel, {
       props: {
