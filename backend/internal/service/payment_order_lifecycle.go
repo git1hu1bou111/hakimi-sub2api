@@ -289,8 +289,10 @@ func (s *PaymentService) VerifyOrderByOutTradeNo(ctx context.Context, outTradeNo
 	if o.UserID != userID {
 		return nil, infraerrors.Forbidden("FORBIDDEN", "no permission for this order")
 	}
-	// Only verify orders that are still pending or recently expired
-	if o.Status == OrderStatusPending || o.Status == OrderStatusExpired {
+	// Only verify orders that can still be safely recovered by a paid upstream
+	// status. Recovery remains idempotent because confirmPayment updates the
+	// order only from these terminal-before-payment states to PAID once.
+	if paymentOrderCanRecoverFromUpstreamPaid(o.Status) {
 		result := s.reconcilePaid(ctx, o)
 		if result == checkPaidResultAlreadyPaid {
 			// Reload order to get updated status
@@ -301,6 +303,15 @@ func (s *PaymentService) VerifyOrderByOutTradeNo(ctx context.Context, outTradeNo
 		}
 	}
 	return o, nil
+}
+
+func paymentOrderCanRecoverFromUpstreamPaid(status string) bool {
+	switch status {
+	case OrderStatusPending, OrderStatusExpired, OrderStatusCancelled:
+		return true
+	default:
+		return false
+	}
 }
 
 // ReconcilePendingWxpayOrders actively checks recent pending WeChat orders so

@@ -261,6 +261,127 @@ func TestVerifyOrderByOutTradeNoBackfillsTradeNoFromPaidQuery(t *testing.T) {
 	require.Len(t, redeemRepo.useCalls, 1)
 	require.Equal(t, int64(1), redeemRepo.useCalls[0].id)
 	require.Equal(t, user.ID, redeemRepo.useCalls[0].userID)
+
+	got, err = svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusCompleted, got.Status)
+	require.Equal(t, 1, provider.queryCalls, "completed order must not query upstream again")
+	require.Equal(t, 88.0, userRepo.getByIDUser.Balance, "repeat order verify must not credit again")
+	require.Len(t, redeemRepo.useCalls, 1, "repeat order verify must not redeem again")
+
+	err = svc.HandlePaymentNotification(ctx, &payment.PaymentNotification{
+		TradeNo: "upstream-trade-123",
+		OrderID: order.OutTradeNo,
+		Amount:  88,
+		Status:  payment.NotificationStatusSuccess,
+	}, payment.TypeAlipay)
+	require.NoError(t, err)
+	require.Equal(t, 88.0, userRepo.getByIDUser.Balance, "duplicate webhook must not credit again")
+	require.Len(t, redeemRepo.useCalls, 1, "duplicate webhook must not redeem again")
+}
+
+func TestVerifyOrderByOutTradeNoRecoversLongExpiredPaidOrder(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentOrderLifecycleTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("checkpaid-expired@example.com").
+		SetPasswordHash("hash").
+		SetUsername("checkpaid-expired-user").
+		Save(ctx)
+	require.NoError(t, err)
+
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(66).
+		SetPayAmount(66).
+		SetFeeRate(0).
+		SetRechargeCode("CHECKPAID-LONG-EXPIRED").
+		SetOutTradeNo("sub2_checkpaid_long_expired").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusExpired).
+		SetExpiresAt(time.Now().Add(-2 * time.Hour)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	oldUpdatedAt := time.Now().Add(-90 * time.Minute).UTC().Truncate(time.Microsecond)
+	order, err = client.PaymentOrder.UpdateOneID(order.ID).
+		SetUpdatedAt(oldUpdatedAt).
+		Save(ctx)
+	require.NoError(t, err)
+
+	userRepo := &mockUserRepo{
+		getByIDUser: &User{
+			ID:       user.ID,
+			Email:    user.Email,
+			Username: user.Username,
+			Balance:  0,
+		},
+	}
+	userRepo.updateBalanceFn = func(ctx context.Context, id int64, amount float64) error {
+		require.Equal(t, user.ID, id)
+		if userRepo.getByIDUser != nil {
+			userRepo.getByIDUser.Balance += amount
+		}
+		return nil
+	}
+	redeemRepo := &paymentOrderLifecycleRedeemRepo{
+		codesByCode: map[string]*RedeemCode{
+			order.RechargeCode: {
+				ID:     1,
+				Code:   order.RechargeCode,
+				Type:   RedeemTypeBalance,
+				Value:  order.Amount,
+				Status: StatusUnused,
+			},
+		},
+	}
+	redeemService := NewRedeemService(
+		redeemRepo,
+		userRepo,
+		nil,
+		nil,
+		nil,
+		client,
+		nil,
+		nil,
+	)
+	registry := payment.NewRegistry()
+	provider := &paymentOrderLifecycleQueryProvider{
+		resp: &payment.QueryOrderResponse{
+			TradeNo: "upstream-expired-trade-123",
+			Status:  payment.ProviderStatusPaid,
+			Amount:  66,
+		},
+	}
+	registry.Register(provider)
+
+	svc := &PaymentService{
+		entClient:       client,
+		registry:        registry,
+		redeemService:   redeemService,
+		userRepo:        userRepo,
+		providersLoaded: true,
+	}
+
+	got, err := svc.VerifyOrderByOutTradeNo(ctx, order.OutTradeNo, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
+	require.Equal(t, OrderStatusCompleted, got.Status)
+	require.Equal(t, "upstream-expired-trade-123", got.PaymentTradeNo)
+
+	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusCompleted, reloaded.Status)
+	require.NotNil(t, reloaded.PaidAt)
+	require.Equal(t, 66.0, userRepo.getByIDUser.Balance)
+	require.Len(t, redeemRepo.useCalls, 1)
 }
 
 func TestVerifyOrderByOutTradeNoRetriesZeroAmountPaidQueryOnce(t *testing.T) {

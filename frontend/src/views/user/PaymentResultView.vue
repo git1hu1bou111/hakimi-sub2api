@@ -108,7 +108,7 @@ import {
 } from '@/components/payment/paymentFlow'
 import { usePaymentStore } from '@/stores/payment'
 import { paymentAPI } from '@/api/payment'
-import type { PublicOrderVerifyResult } from '@/api/payment'
+import type { PaymentReturnParams, PublicOrderVerifyResult } from '@/api/payment'
 import type { OrderStatus, PaymentOrder } from '@/types/payment'
 import { formatPaymentAmount, normalizePaymentCurrency } from '@/components/payment/currency'
 import { normalizePaymentMethodForDisplay, paymentMethodI18nKey } from './paymentUx'
@@ -137,6 +137,7 @@ const SUCCESS_STATUSES = new Set(['COMPLETED', 'PAID', 'RECHARGING'])
 const PENDING_STATUSES = new Set(['PENDING', 'CREATED', 'WAITING', 'PROCESSING'])
 const STATUS_REFRESH_INTERVAL_MS = 2000
 const STATUS_REFRESH_MAX_ATTEMPTS = 15
+const RETURN_QUERY_UNSIGNED_KEYS = new Set(['order_id', 'resume_token', 'status', 'wechat_resume_token'])
 
 let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null
 const refreshAttempts = ref(0)
@@ -290,12 +291,32 @@ async function resolveOrderFromOutTradeNo(outTradeNo: string): Promise<ResolvedO
     return result.data
   } catch (_err: unknown) {
     try {
-      const result = await paymentAPI.verifyOrderPublic(outTradeNo)
+      const returnParams = buildGatewayReturnParams()
+      const result = returnParams
+        ? await paymentAPI.verifyOrderPublic(outTradeNo, returnParams)
+        : await paymentAPI.verifyOrderPublic(outTradeNo)
       return result.data
     } catch (_innerErr: unknown) {
       return null
     }
   }
+}
+
+function buildGatewayReturnParams(): PaymentReturnParams | undefined {
+  const params: PaymentReturnParams = {}
+  for (const [key, value] of Object.entries(route.query)) {
+    if (RETURN_QUERY_UNSIGNED_KEYS.has(key)) continue
+    const firstValue = Array.isArray(value) ? value.find(item => typeof item === 'string' && item.trim() !== '') : value
+    if (typeof firstValue !== 'string') continue
+    const trimmed = firstValue.trim()
+    if (!trimmed) continue
+    params[key] = trimmed
+  }
+
+  if (!params.sign || !params.out_trade_no) {
+    return undefined
+  }
+  return params
 }
 
 function clearStatusRefreshTimer(): void {
@@ -384,6 +405,16 @@ onMounted(async () => {
       setResolvedOrder(await paymentStore.pollOrderStatus(orderId))
     } catch (_err: unknown) {
       // Order lookup failed, will try legacy fallback below when possible.
+    }
+  }
+
+  if (order.value && outTradeNo && buildGatewayReturnParams() && !isSuccessStatus(order.value.status)) {
+    const recoveredOrder = await resolveOrderFromOutTradeNo(outTradeNo)
+    if (recoveredOrder) {
+      setResolvedOrder(recoveredOrder)
+      if (!orderId) {
+        orderId = hasOrderId(recoveredOrder) ? recoveredOrder.id : 0
+      }
     }
   }
 

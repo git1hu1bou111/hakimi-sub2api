@@ -353,6 +353,103 @@ describe('PaymentResultView', () => {
     expect(wrapper.text()).toContain('payment.result.success')
   })
 
+  it('passes signed gateway return params to public verification without local result params', async () => {
+    routeState.query = {
+      order_id: '42',
+      resume_token: 'resume-local',
+      status: 'success',
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'legacy-signed-123',
+      trade_no: 'gateway-123',
+      name: 'Sub2API',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    }
+    resolveOrderPublicByResumeToken.mockRejectedValueOnce(new Error('resume failed'))
+    pollOrderStatus.mockRejectedValueOnce(new Error('order polling unavailable'))
+    verifyOrder.mockRejectedValue(new Error('auth required'))
+    verifyOrderPublic.mockResolvedValue({
+      data: {
+        ...orderFactory('PAID'),
+        out_trade_no: 'legacy-signed-123',
+      },
+    })
+
+    mount(PaymentResultView, {
+      global: {
+        stubs: {
+          OrderStatusBadge: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-signed-123', {
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'legacy-signed-123',
+      trade_no: 'gateway-123',
+      name: 'Sub2API',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    })
+  })
+
+  it('tries signed public recovery when local order_id polling returns a non-success status', async () => {
+    routeState.query = {
+      order_id: '42',
+      status: 'success',
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'signed-cancelled-123',
+      trade_no: 'gateway-456',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    }
+    pollOrderStatus.mockResolvedValueOnce({
+      ...orderFactory('CANCELLED'),
+      out_trade_no: 'signed-cancelled-123',
+    })
+    verifyOrder.mockRejectedValue(new Error('auth required'))
+    verifyOrderPublic.mockResolvedValueOnce({
+      data: {
+        ...orderFactory('PAID'),
+        out_trade_no: 'signed-cancelled-123',
+      },
+    })
+
+    const wrapper = mount(PaymentResultView, {
+      global: {
+        stubs: {
+          OrderStatusBadge: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(pollOrderStatus).toHaveBeenCalledWith(42)
+    expect(verifyOrderPublic).toHaveBeenCalledWith('signed-cancelled-123', {
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'signed-cancelled-123',
+      trade_no: 'gateway-456',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    })
+    expect(wrapper.text()).toContain('payment.result.success')
+  })
+
   it('renders the minimal public out_trade_no verification result without payment_type', async () => {
     routeState.query = {
       out_trade_no: 'legacy-minimal',

@@ -433,7 +433,8 @@ func (h *PaymentHandler) GetRefundEligibleProviders(c *gin.Context) {
 
 // VerifyOrderRequest is the request body for verifying a payment order.
 type VerifyOrderRequest struct {
-	OutTradeNo string `json:"out_trade_no" binding:"required"`
+	OutTradeNo   string            `json:"out_trade_no" binding:"required"`
+	ReturnParams map[string]string `json:"return_params,omitempty"`
 }
 
 type ResolveOrderByResumeTokenRequest struct {
@@ -562,7 +563,15 @@ func (h *PaymentHandler) VerifyOrderPublic(c *gin.Context) {
 		return
 	}
 
-	order, err := h.paymentService.VerifyOrderPublic(c.Request.Context(), req.OutTradeNo)
+	var (
+		order *dbent.PaymentOrder
+		err   error
+	)
+	if len(req.ReturnParams) > 0 {
+		order, err = h.paymentService.VerifyOrderPublicWithReturnParams(c.Request.Context(), req.OutTradeNo, req.ReturnParams)
+	} else {
+		order, err = h.paymentService.VerifyOrderPublic(c.Request.Context(), req.OutTradeNo)
+	}
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return

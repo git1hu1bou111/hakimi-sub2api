@@ -23,6 +23,8 @@ export interface PublicOrderVerifyResult {
   expires_at: string
 }
 
+export type PaymentReturnParams = Record<string, string>
+
 export const paymentAPI = {
   /** Get payment configuration (enabled types, limits, etc.) */
   getConfig() {
@@ -70,8 +72,12 @@ export const paymentAPI = {
   },
 
   /** Legacy-compatible public order lookup by out_trade_no */
-  verifyOrderPublic(outTradeNo: string) {
-    return apiClient.post<PublicOrderVerifyResult>('/payment/public/orders/verify', { out_trade_no: outTradeNo })
+  verifyOrderPublic(outTradeNo: string, returnParams?: PaymentReturnParams) {
+    const payload: { out_trade_no: string; return_params?: PaymentReturnParams } = { out_trade_no: outTradeNo }
+    if (returnParams && Object.keys(returnParams).length > 0) {
+      payload.return_params = returnParams
+    }
+    return apiClient.post<PublicOrderVerifyResult>('/payment/public/orders/verify', payload)
   },
 
   /** Resolve an order from a signed resume token without auth */
