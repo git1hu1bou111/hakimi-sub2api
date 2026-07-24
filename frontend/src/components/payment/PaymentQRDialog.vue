@@ -120,8 +120,8 @@ let verifyAttempts = 0
 let lastVerifyAt = 0
 let pollInFlight = false
 
-const VERIFY_RETRY_INTERVAL_MS = 15000
-const VERIFY_RETRY_MAX_ATTEMPTS = 6
+const VERIFY_RETRY_INTERVAL_MS = 5000
+const VERIFY_RETRY_MAX_ATTEMPTS = 24
 
 const isAlipay = computed(() => isBuiltInAlipayMethod(props.paymentType))
 const isWxpay = computed(() => isBuiltInWxpayMethod(props.paymentType))
@@ -301,7 +301,8 @@ function init() {
     seconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000)
   }
   startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  pollTimer = setInterval(pollStatus, 2000)
+  void pollStatus()
   renderQR()
 }
 

@@ -135,8 +135,8 @@ const returnInfo = ref<ReturnInfo | null>(null)
 
 const SUCCESS_STATUSES = new Set(['COMPLETED', 'PAID', 'RECHARGING'])
 const PENDING_STATUSES = new Set(['PENDING', 'CREATED', 'WAITING', 'PROCESSING'])
-const STATUS_REFRESH_INTERVAL_MS = 2000
-const STATUS_REFRESH_MAX_ATTEMPTS = 15
+const STATUS_REFRESH_INTERVAL_MS = 1000
+const STATUS_REFRESH_MAX_ATTEMPTS = 30
 const RETURN_QUERY_UNSIGNED_KEYS = new Set(['order_id', 'resume_token', 'status', 'wechat_resume_token'])
 
 let statusRefreshTimer: ReturnType<typeof setTimeout> | null = null

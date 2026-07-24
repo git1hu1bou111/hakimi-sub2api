@@ -68,8 +68,8 @@ let countdownTimer: ReturnType<typeof setInterval> | null = null
 let verifyAttempts = 0
 let lastVerifyAt = 0
 
-const VERIFY_RETRY_INTERVAL_MS = 15000
-const VERIFY_RETRY_MAX_ATTEMPTS = 6
+const VERIFY_RETRY_INTERVAL_MS = 5000
+const VERIFY_RETRY_MAX_ATTEMPTS = 24
 
 const countdownDisplay = computed(() => {
   const m = Math.floor(remainingSeconds.value / 60)
@@ -247,7 +247,8 @@ onMounted(() => {
     seconds = Math.floor((expiresAt.getTime() - now.getTime()) / 1000)
   }
   startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  pollTimer = setInterval(pollStatus, 2000)
+  void pollStatus()
   renderQR()
 })
 
