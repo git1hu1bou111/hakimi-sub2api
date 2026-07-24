@@ -255,11 +255,10 @@ async function renderQR() {
 }
 
 async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder> {
-  if (!isWxpay.value) return order
   const outTradeNo = String(order.out_trade_no || '').trim()
   if (!outTradeNo) return order
   const normalizedStatus = String(order.status || '').trim().toUpperCase()
-  if (normalizedStatus !== 'PENDING') return order
+  if (!['PENDING', 'EXPIRED', 'CANCELLED'].includes(normalizedStatus)) return order
   const now = Date.now()
   if (verifyAttempts >= VERIFY_RETRY_MAX_ATTEMPTS || now - lastVerifyAt < VERIFY_RETRY_INTERVAL_MS) {
     return order
@@ -278,13 +277,13 @@ async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder
 let pollInFlight = false
 async function pollStatus() {
   if (!props.orderId || outcome.value) return
-  // 防重入：接口（含 verifyOrder 二次确认）响应慢于 3 秒轮询间隔时避免并发重叠请求。
+  // Avoid overlapping local/upstream polls when a request takes longer than the 3s interval.
   if (pollInFlight) return
   pollInFlight = true
   try {
     let order = await paymentStore.pollOrderStatus(props.orderId)
     if (!order) return
-    // 已进入终态则不再处理迟到的响应。
+    // If the component has already settled, ignore this late response.
     if (outcome.value) return
     order = await tryRecoverPendingOrder(order)
     if (outcome.value) return
@@ -339,6 +338,7 @@ function cleanup() {
 qrUrl.value = props.qrCode
 verifyAttempts = 0
 lastVerifyAt = 0
+pollInFlight = false
 let seconds = 30 * 60
 if (props.expiresAt) {
   seconds = Math.floor((new Date(props.expiresAt).getTime() - Date.now()) / 1000)

@@ -154,7 +154,7 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.text()).not.toContain('payment.qr.scanAlipay')
   })
 
-  it('actively verifies a stuck pending order and settles it when upstream confirms payment', async () => {
+  it('actively verifies a stuck alipay QR order and settles it when upstream confirms payment', async () => {
     pollOrderStatus.mockResolvedValue(orderFactory('PENDING'))
     verifyOrder.mockResolvedValue({
       data: orderFactory('COMPLETED'),
@@ -165,7 +165,7 @@ describe('PaymentStatusPanel', () => {
         orderId: 42,
         qrCode: 'https://pay.example.com/qr/42',
         expiresAt: '2099-01-01T12:30:00Z',
-        paymentType: 'wxpay',
+        paymentType: 'alipay',
         orderType: 'balance',
       },
       global: {

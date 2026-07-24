@@ -21,6 +21,7 @@ import (
 
 type paymentOrderLifecycleQueryProvider struct {
 	key               string
+	supportedTypes    []payment.PaymentType
 	lastQueryTradeNo  string
 	lastCancelTradeNo string
 	queryCalls        int
@@ -49,6 +50,9 @@ func (p *paymentOrderLifecycleQueryProvider) ProviderKey() string {
 }
 
 func (p *paymentOrderLifecycleQueryProvider) SupportedTypes() []payment.PaymentType {
+	if len(p.supportedTypes) > 0 {
+		return p.supportedTypes
+	}
 	return []payment.PaymentType{p.ProviderKey()}
 }
 
@@ -688,7 +692,7 @@ func TestCancelOrderStillClosesUnpaidUpstreamOrder(t *testing.T) {
 	require.Equal(t, OrderStatusCancelled, reloaded.Status)
 }
 
-func TestReconcilePendingWxpayOrdersBackfillsPaidOrder(t *testing.T) {
+func TestReconcileRecoverablePaymentOrdersBackfillsPaidWxpayOrder(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentOrderLifecycleTestClient(t)
 
@@ -776,7 +780,7 @@ func TestReconcilePendingWxpayOrdersBackfillsPaidOrder(t *testing.T) {
 		providersLoaded: true,
 	}
 
-	recovered, err := svc.ReconcilePendingWxpayOrders(ctx)
+	recovered, err := svc.ReconcileRecoverablePaymentOrders(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 1, recovered)
 	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
@@ -787,6 +791,109 @@ func TestReconcilePendingWxpayOrdersBackfillsPaidOrder(t *testing.T) {
 	require.Equal(t, OrderStatusCompleted, reloaded.Status)
 	require.Equal(t, "wxpay-upstream-trade-123", reloaded.PaymentTradeNo)
 	require.Equal(t, 50.0, userRepo.getByIDUser.Balance)
+	require.Len(t, redeemRepo.useCalls, 1)
+}
+
+func TestReconcileRecoverablePaymentOrdersBackfillsEasyPayAlipayQRCodeOrder(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentOrderLifecycleTestClient(t)
+
+	user, err := client.User.Create().
+		SetEmail("easypay-reconcile@example.com").
+		SetPasswordHash("hash").
+		SetUsername("easypay-reconcile-user").
+		Save(ctx)
+	require.NoError(t, err)
+
+	order, err := client.PaymentOrder.Create().
+		SetUserID(user.ID).
+		SetUserEmail(user.Email).
+		SetUserName(user.Username).
+		SetAmount(1).
+		SetPayAmount(1).
+		SetFeeRate(0).
+		SetRechargeCode("EASYPAY-QR-RECONCILE").
+		SetOutTradeNo("sub2_easypay_qr_reconcile").
+		SetPaymentType(payment.TypeAlipay).
+		SetPaymentTradeNo("").
+		SetOrderType(payment.OrderTypeBalance).
+		SetStatus(OrderStatusPending).
+		SetExpiresAt(time.Now().Add(time.Hour)).
+		SetClientIP("127.0.0.1").
+		SetSrcHost("api.example.com").
+		Save(ctx)
+	require.NoError(t, err)
+
+	userRepo := &mockUserRepo{
+		getByIDUser: &User{
+			ID:       user.ID,
+			Email:    user.Email,
+			Username: user.Username,
+			Balance:  0,
+		},
+	}
+	userRepo.updateBalanceFn = func(ctx context.Context, id int64, amount float64) error {
+		require.Equal(t, user.ID, id)
+		if userRepo.getByIDUser != nil {
+			userRepo.getByIDUser.Balance += amount
+		}
+		return nil
+	}
+	redeemRepo := &paymentOrderLifecycleRedeemRepo{
+		codesByCode: map[string]*RedeemCode{
+			order.RechargeCode: {
+				ID:     1,
+				Code:   order.RechargeCode,
+				Type:   RedeemTypeBalance,
+				Value:  order.Amount,
+				Status: StatusUnused,
+			},
+		},
+	}
+	redeemService := NewRedeemService(
+		redeemRepo,
+		userRepo,
+		nil,
+		nil,
+		nil,
+		client,
+		nil,
+		nil,
+	)
+	registry := payment.NewRegistry()
+	provider := &paymentOrderLifecycleQueryProvider{
+		key:            payment.TypeEasyPay,
+		supportedTypes: []payment.PaymentType{payment.TypeAlipay},
+		resp: &payment.QueryOrderResponse{
+			TradeNo: "easypay-api-trade-123",
+			Status:  payment.ProviderStatusPaid,
+			Amount:  1,
+			Metadata: map[string]string{
+				"pid": "29678",
+			},
+		},
+	}
+	registry.Register(provider)
+
+	svc := &PaymentService{
+		entClient:       client,
+		registry:        registry,
+		redeemService:   redeemService,
+		userRepo:        userRepo,
+		providersLoaded: true,
+	}
+
+	recovered, err := svc.ReconcileRecoverablePaymentOrders(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, recovered)
+	require.Equal(t, order.OutTradeNo, provider.lastQueryTradeNo)
+	require.Zero(t, provider.cancelCalls)
+
+	reloaded, err := client.PaymentOrder.Get(ctx, order.ID)
+	require.NoError(t, err)
+	require.Equal(t, OrderStatusCompleted, reloaded.Status)
+	require.Equal(t, "easypay-api-trade-123", reloaded.PaymentTradeNo)
+	require.Equal(t, 1.0, userRepo.getByIDUser.Balance)
 	require.Len(t, redeemRepo.useCalls, 1)
 }
 

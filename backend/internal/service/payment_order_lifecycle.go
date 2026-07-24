@@ -11,6 +11,7 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/ent/paymentorder"
+	"github.com/Wei-Shaw/sub2api/ent/predicate"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
@@ -27,7 +28,8 @@ const (
 	checkPaidResultAlreadyPaid = "already_paid"
 	checkPaidResultCancelled   = "cancelled"
 
-	pendingWxpayReconcileLimit = 20
+	recoverablePaymentReconcileLimit    = 20
+	recoverablePaymentReconcileLookback = 24 * time.Hour
 )
 
 type checkPaidOptions struct {
@@ -314,26 +316,21 @@ func paymentOrderCanRecoverFromUpstreamPaid(status string) bool {
 	}
 }
 
-// ReconcilePendingWxpayOrders actively checks recent pending WeChat orders so
-// missed provider notifications do not wait until order expiry to fulfill.
-func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, error) {
+// ReconcileRecoverablePaymentOrders actively checks recent recoverable QR-style
+// orders so missed provider notifications do not leave paid orders stuck.
+func (s *PaymentService) ReconcileRecoverablePaymentOrders(ctx context.Context) (int, error) {
 	now := time.Now()
 	orders, err := s.entClient.PaymentOrder.Query().
 		Where(
-			paymentorder.StatusEQ(OrderStatusPending),
-			paymentorder.ExpiresAtGT(now),
-			paymentorder.Or(
-				paymentorder.PaymentTypeEQ(payment.TypeWxpay),
-				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),
-				paymentorder.ProviderKeyEQ(payment.TypeWxpay),
-				paymentorder.ProviderKeyHasPrefix(payment.TypeWxpay+"_"),
-			),
+			paymentorder.StatusIn(OrderStatusPending, OrderStatusExpired, OrderStatusCancelled),
+			paymentorder.CreatedAtGT(now.Add(-recoverablePaymentReconcileLookback)),
+			recoverablePaymentOrderProviderPredicate(),
 		).
-		Order(dbent.Asc(paymentorder.FieldCreatedAt)).
-		Limit(pendingWxpayReconcileLimit).
+		Order(dbent.Desc(paymentorder.FieldCreatedAt)).
+		Limit(recoverablePaymentReconcileLimit).
 		All(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("query pending wxpay orders: %w", err)
+		return 0, fmt.Errorf("query recoverable payment orders: %w", err)
 	}
 
 	recovered := 0
@@ -343,6 +340,34 @@ func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, 
 		}
 	}
 	return recovered, nil
+}
+
+// ReconcilePendingWxpayOrders is kept for older callers/tests; it now delegates
+// to the broader QR/order-query reconciliation path.
+func (s *PaymentService) ReconcilePendingWxpayOrders(ctx context.Context) (int, error) {
+	return s.ReconcileRecoverablePaymentOrders(ctx)
+}
+
+func recoverablePaymentOrderProviderPredicate() predicate.PaymentOrder {
+	return paymentorder.Or(
+		paymentorder.ProviderKeyEQ(payment.TypeWxpay),
+		paymentorder.ProviderKeyHasPrefix(payment.TypeWxpay+"_"),
+		paymentorder.ProviderKeyEQ(payment.TypeAlipay),
+		paymentorder.ProviderKeyHasPrefix(payment.TypeAlipay+"_"),
+		paymentorder.ProviderKeyEQ(payment.TypeEasyPay),
+		paymentorder.ProviderKeyHasPrefix(payment.TypeEasyPay+"_"),
+		paymentorder.And(
+			paymentorder.Or(paymentorder.ProviderKeyIsNil(), paymentorder.ProviderKeyEQ("")),
+			paymentorder.Or(
+				paymentorder.PaymentTypeEQ(payment.TypeWxpay),
+				paymentorder.PaymentTypeHasPrefix(payment.TypeWxpay+"_"),
+				paymentorder.PaymentTypeEQ(payment.TypeAlipay),
+				paymentorder.PaymentTypeHasPrefix(payment.TypeAlipay+"_"),
+				paymentorder.PaymentTypeEQ(payment.TypeEasyPay),
+				paymentorder.PaymentTypeHasPrefix(payment.TypeEasyPay+"_"),
+			),
+		),
+	)
 }
 
 // VerifyOrderPublic returns the currently persisted public order state without
