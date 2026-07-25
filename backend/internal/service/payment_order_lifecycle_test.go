@@ -20,14 +20,19 @@ import (
 )
 
 type paymentOrderLifecycleQueryProvider struct {
-	key               string
-	supportedTypes    []payment.PaymentType
-	lastQueryTradeNo  string
-	lastCancelTradeNo string
-	queryCalls        int
-	cancelCalls       int
-	responses         []*payment.QueryOrderResponse
-	resp              *payment.QueryOrderResponse
+	key                            string
+	supportedTypes                 []payment.PaymentType
+	lastQueryTradeNo               string
+	lastCancelTradeNo              string
+	queryCalls                     int
+	cancelCalls                    int
+	responses                      []*payment.QueryOrderResponse
+	resp                           *payment.QueryOrderResponse
+	disableAutomaticReconciliation bool
+}
+
+func (p *paymentOrderLifecycleQueryProvider) AutomaticReconciliationEnabled() bool {
+	return !p.disableAutomaticReconciliation
 }
 
 type paymentOrderLifecycleRedeemRepo struct {

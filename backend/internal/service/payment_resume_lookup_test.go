@@ -15,7 +15,12 @@ import (
 )
 
 type paymentResumeLookupProvider struct {
-	queryCount int
+	queryCount                     int
+	automaticReconciliationEnabled bool
+}
+
+func (p *paymentResumeLookupProvider) AutomaticReconciliationEnabled() bool {
+	return p.automaticReconciliationEnabled
 }
 
 func (p *paymentResumeLookupProvider) Name() string { return "resume-lookup-provider" }
@@ -43,6 +48,14 @@ func (p *paymentResumeLookupProvider) Refund(context.Context, payment.RefundRequ
 	panic("unexpected call")
 }
 
+func TestAutomaticPaymentReconciliationRequiresProviderOptIn(t *testing.T) {
+	provider := &paymentResumeLookupProvider{}
+	require.False(t, automaticPaymentReconciliationEnabled(provider))
+
+	provider.automaticReconciliationEnabled = true
+	require.True(t, automaticPaymentReconciliationEnabled(provider))
+}
+
 type paymentPublicReturnLookupProvider struct {
 	queryCount  int
 	verifyCount int
@@ -57,6 +70,10 @@ func (p *paymentPublicReturnLookupProvider) ProviderKey() string { return paymen
 
 func (p *paymentPublicReturnLookupProvider) SupportedTypes() []payment.PaymentType {
 	return []payment.PaymentType{payment.TypeAlipay}
+}
+
+func (p *paymentPublicReturnLookupProvider) AutomaticReconciliationEnabled() bool {
+	return true
 }
 
 func (p *paymentPublicReturnLookupProvider) CreatePayment(context.Context, payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {
@@ -300,7 +317,7 @@ func TestGetPublicOrderByResumeTokenChecksUpstreamForPendingOrder(t *testing.T) 
 	require.NoError(t, err)
 
 	registry := payment.NewRegistry()
-	provider := &paymentResumeLookupProvider{}
+	provider := &paymentResumeLookupProvider{automaticReconciliationEnabled: true}
 	registry.Register(provider)
 
 	svc := &PaymentService{

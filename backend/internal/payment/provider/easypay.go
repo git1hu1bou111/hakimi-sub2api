@@ -43,7 +43,9 @@ const (
 	signTypeRSA2           = "RSA2"
 	paymentModePopup       = "popup"
 	deviceMobile           = "mobile"
-	easypayV2QueryPath     = "/api/pay/query"
+
+	easyPayAutomaticReconcileHost = "pay.v8jisu.cn"
+	easypayV2QueryPath            = "/api/pay/query"
 )
 
 // EasyPay implements payment.Provider for the EasyPay aggregation platform.
@@ -114,6 +116,20 @@ func (e *EasyPay) apiBase() string {
 		return ""
 	}
 	return normalizeEasyPayAPIBase(e.config["apiBase"])
+}
+
+// AutomaticReconciliationEnabled limits frequent upstream polling to the
+// EasyPay instance whose query behavior is verified for this deployment.
+func (e *EasyPay) AutomaticReconciliationEnabled() bool {
+	if e == nil {
+		return false
+	}
+	parsed, err := url.Parse(e.apiBase())
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return false
+	}
+	host := strings.TrimSuffix(strings.TrimSpace(parsed.Hostname()), ".")
+	return strings.EqualFold(host, easyPayAutomaticReconcileHost)
 }
 
 func (e *EasyPay) Name() string        { return "EasyPay" }

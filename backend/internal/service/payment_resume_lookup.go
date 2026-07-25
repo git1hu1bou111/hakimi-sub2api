@@ -56,7 +56,11 @@ func (s *PaymentService) GetPublicOrderByResumeToken(ctx context.Context, token 
 		return nil, invalidResumeTokenMatchError()
 	}
 	if paymentOrderCanRecoverFromUpstreamPaid(order.Status) {
-		result := s.reconcilePaid(ctx, order)
+		prov, providerErr := s.getOrderProvider(ctx, order)
+		if providerErr != nil || !automaticPaymentReconciliationEnabled(prov) {
+			return order, nil
+		}
+		result := s.checkPaidWithProvider(ctx, order, prov, checkPaidOptions{})
 		if result == checkPaidResultAlreadyPaid {
 			order, err = s.entClient.PaymentOrder.Get(ctx, order.ID)
 			if err != nil {
@@ -112,6 +116,9 @@ func (s *PaymentService) verifySignedEasyPayReturnParams(ctx context.Context, or
 		return false
 	}
 	if prov == nil || prov.ProviderKey() != payment.TypeEasyPay {
+		return false
+	}
+	if !automaticPaymentReconciliationEnabled(prov) {
 		return false
 	}
 

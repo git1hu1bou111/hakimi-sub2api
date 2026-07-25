@@ -28,8 +28,9 @@ const (
 	checkPaidResultAlreadyPaid = "already_paid"
 	checkPaidResultCancelled   = "cancelled"
 
-	recoverablePaymentReconcileLimit    = 20
-	recoverablePaymentReconcileLookback = 24 * time.Hour
+	recoverablePaymentReconcileLimit          = 20
+	recoverablePaymentReconcileCandidateLimit = 500
+	recoverablePaymentReconcileLookback       = 2 * time.Hour
 )
 
 type checkPaidOptions struct {
@@ -154,6 +155,13 @@ func (s *PaymentService) reconcilePaid(ctx context.Context, o *dbent.PaymentOrde
 func (s *PaymentService) checkPaidWithOptions(ctx context.Context, o *dbent.PaymentOrder, opts checkPaidOptions) string {
 	prov, err := s.getOrderProvider(ctx, o)
 	if err != nil {
+		return ""
+	}
+	return s.checkPaidWithProvider(ctx, o, prov, opts)
+}
+
+func (s *PaymentService) checkPaidWithProvider(ctx context.Context, o *dbent.PaymentOrder, prov payment.Provider, opts checkPaidOptions) string {
+	if prov == nil {
 		return ""
 	}
 	queryRef := paymentOrderQueryReference(o, prov)
@@ -295,7 +303,11 @@ func (s *PaymentService) VerifyOrderByOutTradeNo(ctx context.Context, outTradeNo
 	// status. Recovery remains idempotent because confirmPayment updates the
 	// order only from these terminal-before-payment states to PAID once.
 	if paymentOrderCanRecoverFromUpstreamPaid(o.Status) {
-		result := s.reconcilePaid(ctx, o)
+		prov, providerErr := s.getOrderProvider(ctx, o)
+		if providerErr != nil || !automaticPaymentReconciliationEnabled(prov) {
+			return o, nil
+		}
+		result := s.checkPaidWithProvider(ctx, o, prov, checkPaidOptions{})
 		if result == checkPaidResultAlreadyPaid {
 			// Reload order to get updated status
 			o, err = s.entClient.PaymentOrder.Get(ctx, o.ID)
@@ -316,6 +328,16 @@ func paymentOrderCanRecoverFromUpstreamPaid(status string) bool {
 	}
 }
 
+func automaticPaymentReconciliationEnabled(prov payment.Provider) bool {
+	if prov == nil {
+		return false
+	}
+	if capable, ok := prov.(payment.AutomaticReconciliationProvider); ok {
+		return capable.AutomaticReconciliationEnabled()
+	}
+	return payment.GetBasePaymentType(strings.TrimSpace(prov.ProviderKey())) == payment.TypeWxpay
+}
+
 // ReconcileRecoverablePaymentOrders actively checks recent recoverable QR-style
 // orders so missed provider notifications do not leave paid orders stuck.
 func (s *PaymentService) ReconcileRecoverablePaymentOrders(ctx context.Context) (int, error) {
@@ -327,15 +349,24 @@ func (s *PaymentService) ReconcileRecoverablePaymentOrders(ctx context.Context) 
 			recoverablePaymentOrderProviderPredicate(),
 		).
 		Order(dbent.Desc(paymentorder.FieldCreatedAt)).
-		Limit(recoverablePaymentReconcileLimit).
+		Limit(recoverablePaymentReconcileCandidateLimit).
 		All(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("query recoverable payment orders: %w", err)
 	}
 
 	recovered := 0
+	queried := 0
 	for _, order := range orders {
-		if s.reconcilePaid(ctx, order) == checkPaidResultAlreadyPaid {
+		prov, providerErr := s.getOrderProvider(ctx, order)
+		if providerErr != nil || !automaticPaymentReconciliationEnabled(prov) {
+			continue
+		}
+		if queried >= recoverablePaymentReconcileLimit {
+			break
+		}
+		queried++
+		if s.checkPaidWithProvider(ctx, order, prov, checkPaidOptions{}) == checkPaidResultAlreadyPaid {
 			recovered++
 		}
 	}

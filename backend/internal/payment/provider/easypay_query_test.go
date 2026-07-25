@@ -258,6 +258,44 @@ func TestEasyPayV2QueryIsConfigurationDrivenNotDomainDriven(t *testing.T) {
 	}
 }
 
+func TestEasyPayAutomaticReconciliationIsLimitedToV8Jisu(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		apiBase string
+		want    bool
+	}{
+		{name: "exact https host", apiBase: "https://pay.v8jisu.cn/", want: true},
+		{name: "host with explicit port", apiBase: "https://pay.v8jisu.cn:443/mapi.php", want: true},
+		{name: "trailing root dot", apiBase: "https://pay.v8jisu.cn./", want: true},
+		{name: "http is rejected", apiBase: "http://pay.v8jisu.cn/", want: false},
+		{name: "subdomain is rejected", apiBase: "https://api.pay.v8jisu.cn/", want: false},
+		{name: "suffix lookalike is rejected", apiBase: "https://pay.v8jisu.cn.example.com/", want: false},
+		{name: "different gateway is rejected", apiBase: "https://pay.example.com/", want: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider, err := NewEasyPay("test-instance", map[string]string{
+				"pid":       "pid-1",
+				"pkey":      "pkey-1",
+				"apiBase":   tt.apiBase,
+				"notifyUrl": "https://example.com/notify",
+				"returnUrl": "https://example.com/return",
+			})
+			if err != nil {
+				t.Fatalf("NewEasyPay: %v", err)
+			}
+			if got := provider.AutomaticReconciliationEnabled(); got != tt.want {
+				t.Fatalf("AutomaticReconciliationEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEasyPayQueryOrderUsesV2PayQueryEndpointWithMD5(t *testing.T) {
 	t.Parallel()
 

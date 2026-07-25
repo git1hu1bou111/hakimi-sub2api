@@ -243,3 +243,11 @@ type CancelableProvider interface {
 type MerchantIdentityProvider interface {
 	MerchantIdentityMetadata() map[string]string
 }
+
+// AutomaticReconciliationProvider opts a provider instance into frequent
+// upstream order polling. Providers should return true only for instances
+// whose query API has been explicitly verified for this workflow.
+type AutomaticReconciliationProvider interface {
+	Provider
+	AutomaticReconciliationEnabled() bool
+}
