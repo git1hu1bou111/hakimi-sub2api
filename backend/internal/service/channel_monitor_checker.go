@@ -67,7 +67,9 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	mode := bodyOverrideMode(opts)
 
 	start := time.Now()
-	respText, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	respText, rawBody, statusCode, attempts, lastRetryStatus, err := callProviderWithRetry(
+		ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts,
+	)
 	latency := time.Since(start)
 	latencyMs := int(latency / time.Millisecond)
 	res.LatencyMs = &latencyMs
@@ -82,7 +84,13 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 		// 会丢掉真正的上游错误信息，例如 `{"error":{"message":"No available accounts ..."}}`）。
 		res.Status = MonitorStatusError
 		bodySnippet := truncateForErrorBody(rawBody)
-		res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("upstream HTTP %d: %s", statusCode, bodySnippet)))
+		if attempts > 1 {
+			res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf(
+				"upstream HTTP %d after %d attempts: %s", statusCode, attempts, bodySnippet,
+			)))
+		} else {
+			res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("upstream HTTP %d: %s", statusCode, bodySnippet)))
+		}
 		return res
 	}
 
@@ -95,7 +103,7 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 			res.Message = truncateMessage("replace-mode: upstream returned 2xx with empty text")
 			return res
 		}
-		return finalizeOperationalOrDegraded(res, latency, latencyMs)
+		return finalizeMonitorSuccess(res, latency, latencyMs, attempts, lastRetryStatus)
 	}
 
 	if !validateChallenge(respText, challenge.Expected) {
@@ -104,7 +112,66 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 		return res
 	}
 
-	return finalizeOperationalOrDegraded(res, latency, latencyMs)
+	return finalizeMonitorSuccess(res, latency, latencyMs, attempts, lastRetryStatus)
+}
+
+func callProviderWithRetry(
+	ctx context.Context,
+	provider, endpoint, apiKey, model, prompt string,
+	opts *CheckOptions,
+) (extractedText, rawBody string, status, attempts, lastRetryStatus int, err error) {
+	maxAttempts := monitorRetryMaxRetries + 1
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		extractedText, rawBody, status, err = callProvider(ctx, provider, endpoint, apiKey, model, prompt, opts)
+		attempts = attempt
+		if err != nil || !isRetryableMonitorStatus(status) || attempt == maxAttempts {
+			return extractedText, rawBody, status, attempts, lastRetryStatus, err
+		}
+		lastRetryStatus = status
+		if waitErr := waitForMonitorRetry(ctx, attempt); waitErr != nil {
+			return "", "", 0, attempts, lastRetryStatus, waitErr
+		}
+	}
+	return extractedText, rawBody, status, attempts, lastRetryStatus, err
+}
+
+func isRetryableMonitorStatus(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForMonitorRetry(ctx context.Context, retryNumber int) error {
+	delay := monitorRetryBaseDelay * time.Duration(1<<(retryNumber-1))
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func finalizeMonitorSuccess(
+	res *CheckResult,
+	latency time.Duration,
+	latencyMs, attempts, lastRetryStatus int,
+) *CheckResult {
+	res = finalizeOperationalOrDegraded(res, latency, latencyMs)
+	if attempts <= 1 {
+		return res
+	}
+	res.Status = MonitorStatusDegraded
+	recovered := fmt.Sprintf("recovered after %d attempts from upstream HTTP %d", attempts, lastRetryStatus)
+	if res.Message != "" {
+		recovered += "; " + res.Message
+	}
+	res.Message = truncateMessage(recovered)
+	return res
 }
 
 // finalizeOperationalOrDegraded 负责走到最后一步的 operational/degraded 判定。

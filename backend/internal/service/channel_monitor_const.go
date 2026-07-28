@@ -15,6 +15,14 @@ const (
 	monitorPingTimeout = 8 * time.Second
 	// monitorDegradedThreshold 主请求成功但耗时超过该阈值视为 degraded。
 	monitorDegradedThreshold = 6 * time.Second
+	// monitorRetryMaxRetries 对瞬时网关错误额外尝试的次数（不含首次请求）。
+	monitorRetryMaxRetries = 2
+	// monitorRetryBaseDelay 瞬时网关错误重试的基础延迟；后续按 2 倍退避。
+	monitorRetryBaseDelay = 250 * time.Millisecond
+	// monitorFailureThreshold 连续硬失败达到该次数后才对外标记 failed/error。
+	monitorFailureThreshold = 3
+	// monitorFailureStreakMessagePrefix 标识被连续失败阈值降级保存的历史记录。
+	monitorFailureStreakMessagePrefix = "[failure-streak="
 	// monitorHistoryRetentionDays 明细历史保留天数。
 	// 60s 默认间隔 * 30 天 ≈ 43200 行/monitor/model，一般部署总量 <= 2M 行，
 	// PG 无压力；所以直接保留完整明细一个月，可用率查询可以全走原始行不依赖聚合。

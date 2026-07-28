@@ -64,11 +64,14 @@ type openAICaptureHandler struct {
 	lastHeaders               http.Header
 	lastPath                  string
 	status                    int
+	statuses                  []int
+	requestCount              int
 	rawResponse               string
 	responsesLeadingReasoning bool
 }
 
 func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.requestCount++
 	h.lastHeaders = r.Header.Clone()
 	h.lastPath = r.URL.Path
 	defer func() { _ = r.Body.Close() }()
@@ -76,11 +79,15 @@ func (h *openAICaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	_ = json.NewDecoder(r.Body).Decode(&parsed)
 	h.lastBody = parsed
 
-	if h.status == 0 {
-		h.status = http.StatusOK
+	status := h.status
+	if h.requestCount <= len(h.statuses) {
+		status = h.statuses[h.requestCount-1]
+	}
+	if status == 0 {
+		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(h.status)
+	w.WriteHeader(status)
 	if h.rawResponse != "" {
 		_, _ = w.Write([]byte(h.rawResponse))
 		return
@@ -256,6 +263,66 @@ func TestRunCheckForModel_Grok_UpstreamFailure(t *testing.T) {
 	}
 	if res.LatencyMs == nil {
 		t.Fatal("Grok failure should still record latency")
+	}
+}
+
+func TestRunCheckForModel_RetriesTransientGatewayStatusesAndRecovers(t *testing.T) {
+	h := &openAICaptureHandler{statuses: []int{
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusOK,
+	}}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-openai", "gpt-test", nil)
+
+	if h.requestCount != 3 {
+		t.Fatalf("expected 3 attempts, got %d", h.requestCount)
+	}
+	if res.Status != MonitorStatusDegraded {
+		t.Fatalf("recovered retry should be degraded, got status=%s message=%q", res.Status, res.Message)
+	}
+	if !strings.Contains(res.Message, "recovered after 3 attempts from upstream HTTP 503") {
+		t.Fatalf("expected retry recovery message, got %q", res.Message)
+	}
+}
+
+func TestRunCheckForModel_RetriesGatewayTimeoutUntilExhausted(t *testing.T) {
+	h := &openAICaptureHandler{statuses: []int{
+		http.StatusGatewayTimeout,
+		http.StatusGatewayTimeout,
+		http.StatusGatewayTimeout,
+	}}
+	endpoint := setupFakeOpenAI(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-openai", "gpt-test", nil)
+
+	if h.requestCount != 3 {
+		t.Fatalf("expected 3 attempts, got %d", h.requestCount)
+	}
+	if res.Status != MonitorStatusError {
+		t.Fatalf("exhausted retry should be error, got status=%s message=%q", res.Status, res.Message)
+	}
+	if !strings.Contains(res.Message, "upstream HTTP 504 after 3 attempts") {
+		t.Fatalf("expected exhausted retry message, got %q", res.Message)
+	}
+}
+
+func TestRunCheckForModel_DoesNotRetryOtherFailureStatuses(t *testing.T) {
+	for _, status := range []int{http.StatusInternalServerError, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			h := &openAICaptureHandler{status: status}
+			endpoint := setupFakeOpenAI(t, h)
+
+			res := runCheckForModel(context.Background(), MonitorProviderOpenAI, endpoint, "sk-openai", "gpt-test", nil)
+
+			if h.requestCount != 1 {
+				t.Fatalf("status %d should not retry, got %d attempts", status, h.requestCount)
+			}
+			if res.Status != MonitorStatusError {
+				t.Fatalf("status %d should be error, got status=%s message=%q", status, res.Status, res.Message)
+			}
+		})
 	}
 }
 
