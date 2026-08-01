@@ -196,17 +196,17 @@ describe('PaymentProviderDialog payment guide', () => {
       throw new Error('custom method inputs not found')
     }
 
-    await ldcTypeInput.setValue('ldc')
-    await upstreamTypeInput.setValue('epay')
-    await displayNameInput.setValue('LDC')
+    await ldcTypeInput.setValue('usdt_trc20')
+    await upstreamTypeInput.setValue('usdt.trc20')
+    await displayNameInput.setValue('USDT-TRC20')
     await wrapper.find('form').trigger('submit.prevent')
 
     const payload = wrapper.emitted('save')?.[0]?.[0] as {
       config: Record<string, string>
       supported_types: string[]
     }
-    expect(payload.config.customMethods).toBe('[{"type":"ldc","upstreamType":"epay","displayName":"LDC"}]')
-    expect(payload.supported_types).toEqual(['alipay', 'wxpay', 'ldc'])
+    expect(payload.config.customMethods).toBe('[{"type":"usdt_trc20","upstreamType":"usdt.trc20","displayName":"USDT-TRC20"}]')
+    expect(payload.supported_types).toEqual(['alipay', 'wxpay', 'usdt_trc20'])
   })
 
   it('rejects custom EasyPay method types with built-in payment prefixes', async () => {
