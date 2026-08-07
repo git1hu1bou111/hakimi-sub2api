@@ -1216,6 +1216,51 @@ func TestForwardGrokMediaVideoGenerationReturnsUsageAndResponseID(t *testing.T) 
 	require.Equal(t, 10, result.VideoDurationSeconds)
 }
 
+func TestForwardGrokMediaVideoGenerationReturnsTaskIDAsResponseID(t *testing.T) {
+	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	body := []byte(`{"model":"grok-imagine-video","prompt":"waves"}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	account := &Account{
+		ID:          63,
+		Name:        "grok",
+		Platform:    PlatformGrok,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "api-key",
+			"base_url": "https://xai.test/v1",
+		},
+	}
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"task_id":"video-task-123"}`)),
+	}}
+	svc := &OpenAIGatewayService{httpUpstream: upstream}
+
+	result, err := svc.ForwardGrokMedia(context.Background(), c, account, GrokMediaEndpointVideosGenerations, "", body, "application/json")
+	require.NoError(t, err)
+	require.Equal(t, "video-task-123", result.ResponseID)
+}
+
+func TestExtractGrokMediaVideoRequestIDPreservesExistingPrecedence(t *testing.T) {
+	body := []byte(`{
+		"request_id":"request-id",
+		"id":"id",
+		"task_id":"task-id",
+		"data":{"request_id":"data-request-id","id":"data-id","task_id":"data-task-id"},
+		"video":{"request_id":"video-request-id","id":"video-id","task_id":"video-task-id"}
+	}`)
+
+	require.Equal(t, "request-id", extractGrokMediaVideoRequestID(body))
+}
+
 func TestForwardGrokMediaVideoGenerationPreservesImageToVideoModel(t *testing.T) {
 	t.Setenv(xai.EnvAllowUnsafeURLOverrides, "true")
 	gin.SetMode(gin.TestMode)
@@ -2708,6 +2753,30 @@ func TestGrokAPIKeyGatewayTransientSameAccountRetryRequiresPoolAndExplicitFlag(t
 	markedPool.Credentials["pool_mode"] = true
 	delete(markedPool.Credentials, "grok_gateway_transient_errors_do_not_block")
 	require.False(t, isGrokAPIKeyGatewayTransientRetryableOnSameAccount(markedPool, http.StatusBadGateway))
+}
+
+func TestHandleGrokAccountUpstreamError429PoolModeKeepsSchedulingState(t *testing.T) {
+	account := &Account{
+		ID:       613,
+		Platform: PlatformGrok,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"pool_mode": true,
+		},
+	}
+	repo := &grokQuotaAccountRepo{}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+
+	svc.handleGrokAccountUpstreamError(
+		context.Background(), account, http.StatusTooManyRequests,
+		http.Header{"Retry-After": []string{"45"}}, nil,
+	)
+
+	require.Equal(t, 1, repo.updateCalls, "pool mode should retain the quota snapshot for observability")
+	require.Zero(t, repo.rateLimitedCalls)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Nil(t, account.RateLimitResetAt)
 }
 
 func TestHandleGrokAccountUpstreamError402RecoversAfterCooldownExpiry(t *testing.T) {
