@@ -618,7 +618,6 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	if checkMode != MonitorCheckModeQuota && m.APIKeyDecryptFailed {
 		return nil, ErrChannelMonitorAPIKeyDecryptFailed
 	}
-
 	var results []*CheckResult
 	switch checkMode {
 	case MonitorCheckModeQuota:
@@ -629,6 +628,7 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	default:
 		results = s.runChecksConcurrent(ctx, m)
 	}
+	s.applyFailureThresholds(ctx, m.ID, results)
 	s.persistCheckResults(ctx, m, results)
 	return results, nil
 }
@@ -665,6 +665,67 @@ func attachQuotaSnapshot(results []*CheckResult, snapshot *domain.MonitorQuotaSn
 	if !snapshot.Success && strings.TrimSpace(primary.Message) == "" {
 		primary.Message = truncateMessage("quota fetch failed: " + snapshot.Error)
 	}
+}
+
+func (s *ChannelMonitorService) applyFailureThresholds(
+	ctx context.Context,
+	monitorID int64,
+	results []*CheckResult,
+) {
+	for _, result := range results {
+		if result == nil || !isMonitorHardFailure(result.Status) {
+			continue
+		}
+		previous, err := s.repo.ListHistory(ctx, monitorID, result.Model, monitorFailureThreshold-1)
+		if err != nil {
+			slog.Warn("channel_monitor: load failure streak failed",
+				"monitor_id", monitorID, "model", result.Model, "error", err)
+			previous = nil
+		}
+		applyMonitorFailureThreshold(result, previous)
+	}
+}
+
+func applyMonitorFailureThreshold(result *CheckResult, previous []*ChannelMonitorHistoryEntry) {
+	if result == nil || !isMonitorHardFailure(result.Status) {
+		return
+	}
+
+	streak := 1
+	for _, entry := range previous {
+		if !isMonitorFailureHistory(entry) {
+			break
+		}
+		streak++
+		if streak >= monitorFailureThreshold {
+			break
+		}
+	}
+
+	rawStatus := result.Status
+	if streak < monitorFailureThreshold {
+		result.Status = MonitorStatusDegraded
+	}
+	prefix := fmt.Sprintf("[failure-streak=%d/%d raw=%s]", streak, monitorFailureThreshold, rawStatus)
+	if result.Message != "" {
+		prefix += " " + result.Message
+	}
+	result.Message = truncateMessage(prefix)
+}
+
+func isMonitorHardFailure(status string) bool {
+	return status == MonitorStatusFailed || status == MonitorStatusError
+}
+
+func isMonitorFailureHistory(entry *ChannelMonitorHistoryEntry) bool {
+	if entry == nil {
+		return false
+	}
+	if isMonitorHardFailure(entry.Status) {
+		return true
+	}
+	return entry.Status == MonitorStatusDegraded &&
+		strings.HasPrefix(entry.Message, monitorFailureStreakMessagePrefix)
 }
 
 // persistCheckResults 写入本次检测的历史记录并更新 last_checked_at。
