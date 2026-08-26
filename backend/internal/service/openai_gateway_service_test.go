@@ -1564,6 +1564,44 @@ func TestOpenAIStreamingTimeout(t *testing.T) {
 	}
 }
 
+func TestGrokAPIKeyStreamingTimeoutRetriesWithoutAccountCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			StreamDataIntervalTimeout: 1,
+			StreamKeepaliveInterval:   0,
+			MaxLineSize:               defaultMaxLineSize,
+		},
+	}
+	svc := &OpenAIGatewayService{cfg: cfg}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	pr, pw := io.Pipe()
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       pr,
+		Header:     http.Header{},
+	}
+	account := &Account{ID: 7001, Platform: PlatformGrok, Type: AccountTypeAPIKey}
+
+	_, err := svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "grok-4", "grok-4")
+	_ = pw.Close()
+	_ = pr.Close()
+
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+	require.True(t, failoverErr.RequestScopedTransient)
+	require.Equal(t, 1, failoverErr.SameAccountRetryMax)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.False(t, c.Writer.Written())
+	_, runtimeBlocked := svc.openaiAccountRuntimeBlockUntil.Load(account.ID)
+	require.False(t, runtimeBlocked, "Grok API Key idle timeout must not block account scheduling")
+}
+
 func TestOpenAIStreamingContextCanceledReturnsIncompleteErrorWithoutInjectingErrorEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{

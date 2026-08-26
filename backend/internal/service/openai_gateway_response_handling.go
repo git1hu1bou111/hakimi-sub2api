@@ -893,14 +893,21 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			}
 			logger.LegacyPrintf("service.openai_gateway", "Stream data interval timeout: account=%d model=%s interval=%s", account.ID, originalModel, streamInterval)
 			// 处理流超时，可能标记账户为临时不可调度或错误状态
-			if s.rateLimitService != nil {
+			// Grok API Key idle failures are request-scoped: let the existing
+			// failover error retry the same key without mutating account health.
+			grokAPIKey := isGrokAPIKeyAccount(account)
+			if s.rateLimitService != nil && !grokAPIKey {
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
-			// Grok: short cool + account failover when no client-visible bytes
-			// were committed yet (pre-commit). After output started we keep the
-			// legacy stream_timeout path so partial SSE is not dual-written.
+			// Grok: fail over when no client-visible bytes were committed yet
+			// (pre-commit). OAuth accounts retain the short cooldown; API Key
+			// accounts stay schedulable because the failure is request-scoped.
+			// After output started we keep the legacy stream_timeout path so
+			// partial SSE is not dual-written.
 			if account != nil && account.Platform == PlatformGrok {
-				s.tempUnscheduleGrok(ctx, account, grokStreamIdleCooldown, "grok stream idle timeout")
+				if !grokAPIKey {
+					s.tempUnscheduleGrok(ctx, account, grokStreamIdleCooldown, "grok stream idle timeout")
+				}
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
 					_ = resp.Body.Close()
 					return resultWithUsage(), grokStreamIdleFailoverError(account, streamInterval)

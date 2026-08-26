@@ -14,6 +14,14 @@ const defaultGrokStreamIdleTimeout = 180 * time.Second
 // but is not immediately re-picked in a tight failover loop.
 const grokStreamIdleCooldown = 2 * time.Minute
 
+// isGrokAPIKeyAccount identifies the Grok API key accounts that should treat
+// an idle stream as request-scoped and retryable, without changing their
+// persistent scheduling state. OAuth accounts retain the existing cooldown
+// behavior for this failure.
+func isGrokAPIKeyAccount(account *Account) bool {
+	return account != nil && account.Platform == PlatformGrok && account.Type == AccountTypeAPIKey
+}
+
 // resolveGrokStreamIdleTimeout returns the effective upstream-read idle timeout
 // for Grok streams. Prefers the global gateway setting when positive; otherwise
 // applies a Grok-only default so hung SSE bodies still fail over.
@@ -25,7 +33,7 @@ func resolveGrokStreamIdleTimeout(cfgStreamIntervalSec int) time.Duration {
 }
 
 // grokStreamIdleFailoverError builds a pre-commit/handler-visible failover so
-// the gateway can switch OAuth accounts after a hung Grok upstream stream.
+// the gateway can retry or switch accounts after a hung Grok upstream stream.
 func grokStreamIdleFailoverError(account *Account, idle time.Duration) *UpstreamFailoverError {
 	msg := fmt.Sprintf("Grok stream idle timeout after %s with no upstream data", idle.Round(time.Second))
 	return &UpstreamFailoverError{

@@ -15,6 +15,24 @@ func TestResolveGrokStreamIdleTimeout(t *testing.T) {
 	require.Equal(t, defaultGrokStreamIdleTimeout, resolveGrokStreamIdleTimeout(-1))
 }
 
+func TestIsGrokAPIKeyAccount(t *testing.T) {
+	tests := []struct {
+		name    string
+		account *Account
+		want    bool
+	}{
+		{name: "grok api key", account: &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, want: true},
+		{name: "grok oauth", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}, want: false},
+		{name: "openai api key", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, want: false},
+		{name: "nil", account: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isGrokAPIKeyAccount(tt.account))
+		})
+	}
+}
+
 func TestGrokStreamIdleFailoverError(t *testing.T) {
 	account := &Account{ID: 1, Platform: PlatformGrok, Type: AccountTypeOAuth}
 	err := grokStreamIdleFailoverError(account, 180*time.Second)
