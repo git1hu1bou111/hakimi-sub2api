@@ -628,43 +628,11 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	default:
 		results = s.runChecksConcurrent(ctx, m)
 	}
+	// Preserve Hakimi's consecutive-failure dampening for all probe results,
+	// while retaining upstream v0.1.181's quota and quota_probe dispatch.
 	s.applyFailureThresholds(ctx, m.ID, results)
 	s.persistCheckResults(ctx, m, results)
 	return results, nil
-}
-
-// runQuotaOnlyCheck quota 模式：一次配额抓取 → 单条 CheckResult
-// （Model=PrimaryModel，默认 "quota"；无 ping/latency，状态由快照推导）。
-func (s *ChannelMonitorService) runQuotaOnlyCheck(ctx context.Context, m *ChannelMonitor) []*CheckResult {
-	snapshot := s.fetchQuotaSnapshot(ctx, m)
-	res := deriveQuotaCheckResult(snapshot, m.PrimaryModel, time.Now())
-	res.Quota = snapshot
-	return []*CheckResult{res}
-}
-
-// fetchQuotaSnapshot 抓取关联账号配额。未关联账号 / fetcher 未注入时返回
-// 显式错误快照（不返回 error，保证检测周期与历史时间线连续）。
-func (s *ChannelMonitorService) fetchQuotaSnapshot(ctx context.Context, m *ChannelMonitor) *domain.MonitorQuotaSnapshot {
-	if m.AccountID == nil {
-		return quotaErrorSnapshot("usage", "linked account not found", time.Now())
-	}
-	if s.quotaFetcher == nil {
-		return quotaErrorSnapshot("usage", "quota fetcher is not configured", time.Now())
-	}
-	return s.quotaFetcher.Fetch(ctx, *m.AccountID)
-}
-
-// attachQuotaSnapshot quota_probe：把配额快照挂到主模型行（results[0]）。
-// 配额失败不改变探活状态，仅在探活 message 为空时附注失败原因。
-func attachQuotaSnapshot(results []*CheckResult, snapshot *domain.MonitorQuotaSnapshot) {
-	if len(results) == 0 || snapshot == nil {
-		return
-	}
-	primary := results[0]
-	primary.Quota = snapshot
-	if !snapshot.Success && strings.TrimSpace(primary.Message) == "" {
-		primary.Message = truncateMessage("quota fetch failed: " + snapshot.Error)
-	}
 }
 
 func (s *ChannelMonitorService) applyFailureThresholds(
@@ -726,6 +694,40 @@ func isMonitorFailureHistory(entry *ChannelMonitorHistoryEntry) bool {
 	}
 	return entry.Status == MonitorStatusDegraded &&
 		strings.HasPrefix(entry.Message, monitorFailureStreakMessagePrefix)
+}
+
+// runQuotaOnlyCheck quota 模式：一次配额抓取 → 单条 CheckResult
+// （Model=PrimaryModel，默认 "quota"；无 ping/latency，状态由快照推导）。
+func (s *ChannelMonitorService) runQuotaOnlyCheck(ctx context.Context, m *ChannelMonitor) []*CheckResult {
+	snapshot := s.fetchQuotaSnapshot(ctx, m)
+	res := deriveQuotaCheckResult(snapshot, m.PrimaryModel, time.Now())
+	res.Quota = snapshot
+	return []*CheckResult{res}
+}
+
+// fetchQuotaSnapshot 抓取关联账号配额。未关联账号 / fetcher 未注入时返回
+// 显式错误快照（不返回 error，保证检测周期与历史时间线连续）。
+func (s *ChannelMonitorService) fetchQuotaSnapshot(ctx context.Context, m *ChannelMonitor) *domain.MonitorQuotaSnapshot {
+	if m.AccountID == nil {
+		return quotaErrorSnapshot("usage", "linked account not found", time.Now())
+	}
+	if s.quotaFetcher == nil {
+		return quotaErrorSnapshot("usage", "quota fetcher is not configured", time.Now())
+	}
+	return s.quotaFetcher.Fetch(ctx, *m.AccountID)
+}
+
+// attachQuotaSnapshot quota_probe：把配额快照挂到主模型行（results[0]）。
+// 配额失败不改变探活状态，仅在探活 message 为空时附注失败原因。
+func attachQuotaSnapshot(results []*CheckResult, snapshot *domain.MonitorQuotaSnapshot) {
+	if len(results) == 0 || snapshot == nil {
+		return
+	}
+	primary := results[0]
+	primary.Quota = snapshot
+	if !snapshot.Success && strings.TrimSpace(primary.Message) == "" {
+		primary.Message = truncateMessage("quota fetch failed: " + snapshot.Error)
+	}
 }
 
 // persistCheckResults 写入本次检测的历史记录并更新 last_checked_at。

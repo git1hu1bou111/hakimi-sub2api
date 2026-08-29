@@ -132,6 +132,35 @@ describe('PaymentStatusPanel', () => {
     openSpy.mockRestore()
   })
 
+  it('emits restart instead of reopening the old submit URL in popup mode', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({ closed: false } as Window)
+
+    const wrapper = mount(PaymentStatusPanel, {
+      props: {
+        orderId: 42,
+        qrCode: '',
+        payUrl: 'https://pay.example.com/submit.php?out_trade_no=sub2_42',
+        expiresAt: '2099-01-01T12:30:00Z',
+        paymentType: 'alipay',
+        paymentMode: 'popup',
+        orderType: 'balance',
+      },
+      global: {
+        stubs: {
+          Icon: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    await wrapper.get('button.btn.btn-secondary.text-sm').trigger('click')
+
+    expect(openSpy).not.toHaveBeenCalled()
+    expect(wrapper.emitted('restart')).toHaveLength(1)
+
+    openSpy.mockRestore()
+  })
+
   it('uses generic QR copy for custom methods that contain built-in names', async () => {
     const wrapper = mount(PaymentStatusPanel, {
       props: {
@@ -154,7 +183,7 @@ describe('PaymentStatusPanel', () => {
     expect(wrapper.text()).not.toContain('payment.qr.scanAlipay')
   })
 
-  it('actively verifies a stuck pending order and settles it when upstream confirms payment', async () => {
+  it('actively verifies a stuck alipay QR order and settles it when upstream confirms payment', async () => {
     pollOrderStatus.mockResolvedValue(orderFactory('PENDING'))
     verifyOrder.mockResolvedValue({
       data: orderFactory('COMPLETED'),
@@ -165,7 +194,7 @@ describe('PaymentStatusPanel', () => {
         orderId: 42,
         qrCode: 'https://pay.example.com/qr/42',
         expiresAt: '2099-01-01T12:30:00Z',
-        paymentType: 'wxpay',
+        paymentType: 'alipay',
         orderType: 'balance',
       },
       global: {

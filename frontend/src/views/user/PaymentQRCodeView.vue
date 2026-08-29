@@ -42,6 +42,7 @@ import { paymentAPI } from '@/api/payment'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { useAppStore } from '@/stores'
 import { isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
+import type { PaymentOrder } from '@/types/payment'
 import QRCode from 'qrcode'
 import alipayIcon from '@/assets/icons/alipay.svg'
 import wxpayIcon from '@/assets/icons/wxpay.svg'
@@ -60,9 +61,17 @@ const remainingSeconds = ref(0)
 const expired = ref(false)
 const cancelling = ref(false)
 const paymentType = ref('')
+const routeOutTradeNo = ref('')
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
+let verifyAttempts = 0
+let lastVerifyAt = 0
+
+const VERIFY_RETRY_INTERVAL_MS = 5000
+// Keep active upstream reconciliation alive for a typical 30-minute checkout
+// window so delayed scans do not fall back to the slower background job.
+const VERIFY_RETRY_MAX_ATTEMPTS = 360
 
 const countdownDisplay = computed(() => {
   const m = Math.floor(remainingSeconds.value / 60)
@@ -133,19 +142,49 @@ async function renderQR() {
 }
 
 let pollInFlight = false
+
+async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder> {
+  const outTradeNo = String(order.out_trade_no || routeOutTradeNo.value || '').trim()
+  if (!outTradeNo) return order
+  const normalizedStatus = String(order.status || '').trim().toUpperCase()
+  if (!['PENDING', 'EXPIRED', 'CANCELLED'].includes(normalizedStatus)) return order
+  const now = Date.now()
+  if (verifyAttempts >= VERIFY_RETRY_MAX_ATTEMPTS || now - lastVerifyAt < VERIFY_RETRY_INTERVAL_MS) {
+    return order
+  }
+
+  lastVerifyAt = now
+  verifyAttempts += 1
+  try {
+    const result = await paymentAPI.verifyOrder(outTradeNo)
+    return result.data ?? order
+  } catch {
+    return order
+  }
+}
+
 async function pollStatus() {
   if (!orderId.value) return
-  // 防重入：接口响应慢于 3 秒轮询间隔时避免并发重叠请求与重复跳转。
+  // Avoid overlapping local/upstream polls when a request takes longer than the 2s interval.
   if (pollInFlight) return
   pollInFlight = true
   try {
-    const order = await paymentStore.pollOrderStatus(orderId.value)
+    let order = await paymentStore.pollOrderStatus(orderId.value)
     if (!order) return
-    // 定时器已被 cleanup 清除时不再执行终态跳转（响应可能在 cleanup 后才回来）。
+    // If cleanup already stopped the timer, ignore this late response.
+    if (!pollTimer) return
+    order = await tryRecoverPendingOrder(order)
     if (!pollTimer) return
     if (order.status === 'COMPLETED' || order.status === 'PAID') {
       cleanup()
-      router.push({ path: '/payment/result', query: { order_id: String(orderId.value), status: 'success' } })
+      router.push({
+        path: '/payment/result',
+        query: {
+          order_id: String(orderId.value),
+          out_trade_no: String(order.out_trade_no || routeOutTradeNo.value || '') || undefined,
+          status: 'success',
+        },
+      })
     } else if (order.status === 'EXPIRED' || order.status === 'CANCELLED' || order.status === 'FAILED') {
       cleanup()
       expired.value = true
@@ -196,6 +235,10 @@ onMounted(() => {
   qrUrl.value = String(route.query.qr || '')
   payUrl.value = String(route.query.pay_url || '')
   paymentType.value = String(route.query.payment_type || '')
+  routeOutTradeNo.value = String(route.query.out_trade_no || '')
+  verifyAttempts = 0
+  lastVerifyAt = 0
+  pollInFlight = false
 
   // Calculate countdown from expiresAt
   const expiresAtStr = String(route.query.expires_at || '')
@@ -206,7 +249,8 @@ onMounted(() => {
     seconds = Math.floor((expiresAt.getTime() - now.getTime()) / 1000)
   }
   startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  pollTimer = setInterval(pollStatus, 2000)
+  void pollStatus()
   renderQR()
 })
 

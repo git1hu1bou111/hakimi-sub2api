@@ -1,0 +1,26 @@
+[Unit]
+Description=Sub2API Hakimi GROK live service
+After=network.target
+
+[Service]
+Type=simple
+User=sub2api
+Group=sub2api
+WorkingDirectory=/opt/sub2api
+ExecStart=/opt/sub2api/sub2api
+Restart=always
+RestartSec=5
+Environment=GOMEMLIMIT=50GiB
+Environment=SERVER_HOST=127.0.0.1
+Environment=SERVER_PORT=4948
+LimitNOFILE=655350
+LimitNPROC=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sub2api
+ReadOnlyPaths=/www/server/pgsql
+
+[Install]
+WantedBy=multi-user.target

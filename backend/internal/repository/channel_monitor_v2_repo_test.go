@@ -109,6 +109,19 @@ func TestChannelMonitorV2ErrorAggregationCountsFinalUserErrorsOnly(t *testing.T)
 	require.Contains(t, query, "current_error.created_at >= $1 - interval '90 minutes'")
 }
 
+func TestChannelMonitorV2ErrorAggregationResolvesCompositePlatform(t *testing.T) {
+	query := strings.ToLower(channelMonitorV2ErrorAggregationSQL)
+	// Composite groups are a routing layer: error facts must resolve the concrete
+	// account platform (joining groups/accounts) so they aggregate under the same
+	// platform key as usage facts instead of the never-enabled 'composite' platform.
+	require.Contains(t, query, "g.platform = 'composite'")
+	require.Contains(t, query, "left join groups g on g.id = current_error.group_id")
+	require.Contains(t, query, "left join accounts a on a.id = current_error.account_id")
+	require.Contains(t, query, "a.platform")
+	require.Contains(t, query, "nullif(trim(a.platform), '')")
+	require.NotContains(t, query, "nullif(trim(a.platform))")
+}
+
 func TestChannelMonitorV2UsageSuccessExcludesCyberBillingRows(t *testing.T) {
 	for _, query := range []string{channelMonitorV2UsageMetricsSQL, channelMonitorV2UserMetricsSQL} {
 		require.Contains(t, query, "COALESCE(ul.request_type, 0) NOT IN (4, 6)")

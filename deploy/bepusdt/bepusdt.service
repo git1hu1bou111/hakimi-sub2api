@@ -1,0 +1,29 @@
+[Unit]
+Description=BEpusdt payment gateway
+Documentation=https://github.com/v03413/BEpusdt
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bepusdt
+Group=bepusdt
+WorkingDirectory=/var/lib/bepusdt
+EnvironmentFile=/etc/bepusdt.env
+ExecStart=/opt/bepusdt/bepusdt start
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+LimitNOFILE=65535
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/bepusdt /var/log/bepusdt
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

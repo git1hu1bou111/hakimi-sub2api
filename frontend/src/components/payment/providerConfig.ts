@@ -81,6 +81,12 @@ export const PAYMENT_CURRENCY_OPTIONS: TypeOption[] = [
   { value: 'NZD', label: 'NZD' },
 ]
 
+export const EASYPAY_QUERY_SIGN_TYPE_OPTIONS: TypeOption[] = [
+  { value: 'MD5', label: 'MD5' },
+  { value: 'RSA', label: 'RSA' },
+  { value: 'RSA2', label: 'RSA2' },
+]
+
 // 与后端当前集成的 stripe-go v85.0.0 的 stripe.APIVersion 保持一致。
 export const STRIPE_SDK_API_VERSION = '2026-03-25.dahlia'
 
@@ -129,6 +135,10 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
     { key: 'pid', label: 'PID', sensitive: false },
     { key: 'pkey', label: 'PKey', sensitive: true },
     { key: 'apiBase', label: '', sensitive: false },
+    { key: 'queryApiPath', label: '', sensitive: false, optional: true, hintKey: 'admin.settings.payment.field_easypayQueryApiPathHint' },
+    { key: 'querySignType', label: '', sensitive: false, optional: true, hintKey: 'admin.settings.payment.field_easypayQuerySignTypeHint', options: EASYPAY_QUERY_SIGN_TYPE_OPTIONS },
+    { key: 'queryPrivateKey', label: '', sensitive: true, optional: true, clearable: true, hintKey: 'admin.settings.payment.field_easypayQueryPrivateKeyHint' },
+    { key: 'queryPublicKey', label: '', sensitive: true, optional: true, clearable: true, hintKey: 'admin.settings.payment.field_easypayQueryPublicKeyHint' },
     { key: 'cidAlipay', label: '', sensitive: false, optional: true },
     { key: 'cidWxpay', label: '', sensitive: false, optional: true },
   ],

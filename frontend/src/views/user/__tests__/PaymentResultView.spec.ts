@@ -10,6 +10,7 @@ const pollOrderStatus = vi.hoisted(() => vi.fn())
 const verifyOrder = vi.hoisted(() => vi.fn())
 const verifyOrderPublic = vi.hoisted(() => vi.fn())
 const resolveOrderPublicByResumeToken = vi.hoisted(() => vi.fn())
+const refreshUser = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -33,6 +34,12 @@ vi.mock('vue-i18n', async () => {
 vi.mock('@/stores/payment', () => ({
   usePaymentStore: () => ({
     pollOrderStatus,
+  }),
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({
+    refreshUser,
   }),
 }))
 
@@ -91,6 +98,8 @@ describe('PaymentResultView', () => {
     verifyOrder.mockReset()
     verifyOrderPublic.mockReset()
     resolveOrderPublicByResumeToken.mockReset()
+    refreshUser.mockReset()
+    refreshUser.mockResolvedValue({})
     window.localStorage.clear()
   })
 
@@ -171,7 +180,7 @@ describe('PaymentResultView', () => {
     }))
     resolveOrderPublicByResumeToken.mockResolvedValue({
       data: {
-        ...orderFactory('PAID'),
+        ...orderFactory('COMPLETED'),
         amount: 100,
         pay_amount: 103,
         fee_rate: 3,
@@ -190,13 +199,14 @@ describe('PaymentResultView', () => {
 
     expect(pollOrderStatus).not.toHaveBeenCalled()
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledWith('resume-authoritative')
+    expect(refreshUser).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.text()).toContain('103.00')
     expect(wrapper.text()).toContain('100.00')
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toBeNull()
   })
 
-  it('refreshes a pending resume-token result until the order becomes paid', async () => {
+  it('waits for completed fulfillment before refreshing the user balance', async () => {
     vi.useFakeTimers()
     routeState.query = {
       resume_token: 'resume-77',
@@ -210,7 +220,7 @@ describe('PaymentResultView', () => {
         data: orderFactory('PENDING'),
       })
       .mockResolvedValueOnce({
-        data: orderFactory('PAID'),
+        data: orderFactory('COMPLETED'),
       })
 
     const wrapper = mount(PaymentResultView, {
@@ -224,6 +234,7 @@ describe('PaymentResultView', () => {
     await flushPromises()
 
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledTimes(1)
+    expect(refreshUser).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('payment.result.processing')
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).not.toBeNull()
 
@@ -231,9 +242,34 @@ describe('PaymentResultView', () => {
     await flushPromises()
 
     expect(resolveOrderPublicByResumeToken).toHaveBeenCalledTimes(2)
+    expect(refreshUser).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('payment.result.success')
     expect(wrapper.text()).not.toContain('payment.result.failed')
     expect(window.localStorage.getItem(PAYMENT_RECOVERY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('keeps the successful result when refreshing the user balance fails', async () => {
+    routeState.query = {
+      resume_token: 'resume-refresh-failure',
+    }
+    resolveOrderPublicByResumeToken.mockResolvedValue({
+      data: orderFactory('COMPLETED'),
+    })
+    refreshUser.mockRejectedValueOnce(new Error('profile refresh failed'))
+
+    const wrapper = mount(PaymentResultView, {
+      global: {
+        stubs: {
+          OrderStatusBadge: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(refreshUser).toHaveBeenCalledTimes(1)
+    expect(wrapper.text()).toContain('payment.result.success')
+    expect(wrapper.text()).not.toContain('payment.result.failed')
   })
 
   it('falls back to order_id polling when resume-token recovery fails', async () => {
@@ -350,6 +386,103 @@ describe('PaymentResultView', () => {
     expect(verifyOrder).toHaveBeenCalledWith('legacy-123')
     expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-123')
     expect(pollOrderStatus).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('payment.result.success')
+  })
+
+  it('passes signed gateway return params to public verification without local result params', async () => {
+    routeState.query = {
+      order_id: '42',
+      resume_token: 'resume-local',
+      status: 'success',
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'legacy-signed-123',
+      trade_no: 'gateway-123',
+      name: 'Sub2API',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    }
+    resolveOrderPublicByResumeToken.mockRejectedValueOnce(new Error('resume failed'))
+    pollOrderStatus.mockRejectedValueOnce(new Error('order polling unavailable'))
+    verifyOrder.mockRejectedValue(new Error('auth required'))
+    verifyOrderPublic.mockResolvedValue({
+      data: {
+        ...orderFactory('PAID'),
+        out_trade_no: 'legacy-signed-123',
+      },
+    })
+
+    mount(PaymentResultView, {
+      global: {
+        stubs: {
+          OrderStatusBadge: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(verifyOrderPublic).toHaveBeenCalledWith('legacy-signed-123', {
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'legacy-signed-123',
+      trade_no: 'gateway-123',
+      name: 'Sub2API',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    })
+  })
+
+  it('tries signed public recovery when local order_id polling returns a non-success status', async () => {
+    routeState.query = {
+      order_id: '42',
+      status: 'success',
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'signed-cancelled-123',
+      trade_no: 'gateway-456',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    }
+    pollOrderStatus.mockResolvedValueOnce({
+      ...orderFactory('CANCELLED'),
+      out_trade_no: 'signed-cancelled-123',
+    })
+    verifyOrder.mockRejectedValue(new Error('auth required'))
+    verifyOrderPublic.mockResolvedValueOnce({
+      data: {
+        ...orderFactory('PAID'),
+        out_trade_no: 'signed-cancelled-123',
+      },
+    })
+
+    const wrapper = mount(PaymentResultView, {
+      global: {
+        stubs: {
+          OrderStatusBadge: true,
+        },
+      },
+    })
+
+    await flushPromises()
+
+    expect(pollOrderStatus).toHaveBeenCalledWith(42)
+    expect(verifyOrderPublic).toHaveBeenCalledWith('signed-cancelled-123', {
+      pid: '1001',
+      type: 'alipay',
+      out_trade_no: 'signed-cancelled-123',
+      trade_no: 'gateway-456',
+      money: '9.99',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'signed-md5',
+      sign_type: 'MD5',
+    })
     expect(wrapper.text()).toContain('payment.result.success')
   })
 

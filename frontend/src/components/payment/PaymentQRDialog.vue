@@ -118,9 +118,12 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let verifyAttempts = 0
 let lastVerifyAt = 0
+let pollInFlight = false
 
-const VERIFY_RETRY_INTERVAL_MS = 15000
-const VERIFY_RETRY_MAX_ATTEMPTS = 6
+const VERIFY_RETRY_INTERVAL_MS = 5000
+// Keep active upstream reconciliation alive for a typical 30-minute checkout
+// window so delayed scans do not fall back to the slower background job.
+const VERIFY_RETRY_MAX_ATTEMPTS = 360
 
 const isAlipay = computed(() => isBuiltInAlipayMethod(props.paymentType))
 const isWxpay = computed(() => isBuiltInWxpayMethod(props.paymentType))
@@ -197,26 +200,33 @@ async function renderQR() {
 
 async function pollStatus() {
   if (!props.orderId) return
-  let order = await paymentStore.pollOrderStatus(props.orderId)
-  if (!order) return
-  order = await tryRecoverPendingOrder(order)
-  if (order.status === 'COMPLETED' || order.status === 'PAID') {
-    cleanup()
-    paidOrder.value = order
-    success.value = true
-    emit('success')
-  } else if (order.status === 'EXPIRED' || order.status === 'CANCELLED' || order.status === 'FAILED') {
-    cleanup()
-    expired.value = true
+  if (pollInFlight) return
+  pollInFlight = true
+  try {
+    let order = await paymentStore.pollOrderStatus(props.orderId)
+    if (!order) return
+    if (!pollTimer || !props.show) return
+    order = await tryRecoverPendingOrder(order)
+    if (!pollTimer || !props.show) return
+    if (order.status === 'COMPLETED' || order.status === 'PAID') {
+      cleanup()
+      paidOrder.value = order
+      success.value = true
+      emit('success')
+    } else if (order.status === 'EXPIRED' || order.status === 'CANCELLED' || order.status === 'FAILED') {
+      cleanup()
+      expired.value = true
+    }
+  } finally {
+    pollInFlight = false
   }
 }
 
 async function tryRecoverPendingOrder(order: PaymentOrder): Promise<PaymentOrder> {
-  if (!isWxpay.value) return order
   const outTradeNo = String(order.out_trade_no || '').trim()
   if (!outTradeNo) return order
   const normalizedStatus = String(order.status || '').trim().toUpperCase()
-  if (normalizedStatus !== 'PENDING') return order
+  if (!['PENDING', 'EXPIRED', 'CANCELLED'].includes(normalizedStatus)) return order
   const now = Date.now()
   if (verifyAttempts >= VERIFY_RETRY_MAX_ATTEMPTS || now - lastVerifyAt < VERIFY_RETRY_INTERVAL_MS) {
     return order
@@ -285,6 +295,7 @@ function init() {
   qrUrl.value = props.qrCode
   verifyAttempts = 0
   lastVerifyAt = 0
+  pollInFlight = false
 
   let seconds = 30 * 60
   if (props.expiresAt) {
@@ -292,7 +303,8 @@ function init() {
     seconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000)
   }
   startCountdown(seconds)
-  pollTimer = setInterval(pollStatus, 3000)
+  pollTimer = setInterval(pollStatus, 2000)
+  void pollStatus()
   renderQR()
 }
 

@@ -277,6 +277,100 @@ func TestForwardAsRawChatCompletions_PreservesMappedGPT56MaxEffort(t *testing.T)
 	require.Equal(t, "max", *result.ReasoningEffort)
 }
 
+func TestNormalizeGrokRawChatToolTypes(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{
+		"model":"grok-4.5",
+		"tools":[
+			{"function":{"name":"lookup","description":"look up a value","parameters":{"type":"object"}}},
+			{"type":"function","function":{"name":"save","parameters":{"type":"object"}}},
+			{"description":"invalid typeless tool"}
+		],
+		"tool_choice":"auto"
+	}`)
+
+	normalized, err := normalizeGrokRawChatToolTypes(body)
+	require.NoError(t, err)
+	require.True(t, gjson.ValidBytes(normalized))
+	require.Len(t, gjson.GetBytes(normalized, "tools").Array(), 2)
+	require.Equal(t, "function", gjson.GetBytes(normalized, "tools.0.type").String())
+	require.Equal(t, "lookup", gjson.GetBytes(normalized, "tools.0.function.name").String())
+	require.Equal(t, "function", gjson.GetBytes(normalized, "tools.1.type").String())
+	require.Equal(t, "auto", gjson.GetBytes(normalized, "tool_choice").String())
+}
+
+func TestNormalizeGrokRawChatToolTypesDropsOnlyInvalidTools(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeGrokRawChatToolTypes([]byte(`{
+		"model":"grok-4.5",
+		"tools":[{"description":"missing type and function"}],
+		"tool_choice":{"type":"function","function":{"name":"missing"}}
+	}`))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(normalized, "tools").Exists())
+	require.False(t, gjson.GetBytes(normalized, "tool_choice").Exists())
+}
+
+func TestForwardAsRawChatCompletions_NormalizesMissingGrokToolType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"weather"}],"tools":[{"function":{"name":"get_weather","parameters":{"type":"object"}}}],"stream":false}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body: io.NopCloser(strings.NewReader(
+			`{"id":"chatcmpl_grok_tool","object":"chat.completion","model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+		)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Platform = PlatformGrok
+	account.Credentials["model_mapping"] = map[string]any{"grok-4.5": "grok-4.5"}
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "function", gjson.GetBytes(upstream.lastBody, "tools.0.type").String())
+	require.Equal(t, "get_weather", gjson.GetBytes(upstream.lastBody, "tools.0.function.name").String())
+}
+
+func TestForwardAsRawChatCompletions_MarkedGrok502RetriesSamePoolAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"grok-4.5","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"grok upstream temporary error"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+	account := rawChatCompletionsTestAccount()
+	account.Platform = PlatformGrok
+	account.Credentials["pool_mode"] = true
+	account.Credentials["pool_mode_retry_status_codes"] = []int{401, 403, 429, 502, 503}
+	account.Credentials["grok_gateway_transient_errors_do_not_block"] = true
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.Nil(t, result)
+	var failoverErr *UpstreamFailoverError
+	require.ErrorAs(t, err, &failoverErr)
+	require.Equal(t, http.StatusBadGateway, failoverErr.StatusCode)
+	require.True(t, failoverErr.RetryableOnSameAccount)
+}
+
 func TestForwardAsRawChatCompletions_NonStreamingCapturesCacheWriteUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -605,6 +699,86 @@ func TestForwardAsRawChatCompletions_SilentRefusalNormalContentExempt(t *testing
 	require.NotNil(t, result)
 	require.Contains(t, rec.Body.String(), `"content":"ok"`)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
+}
+
+// TestForwardAsRawChatCompletions_StripsEmptyToolCallIdentity 端到端验证 raw
+// CC 流式直转路径剔除 DashScope/DeepSeek 后续参数 delta 的空 id/name：
+// 下游仍保留首包合法 id/name 与 arguments 碎片，但后续 delta 不再带
+// `"id":""` / `"name":""`，避免 dsh 等客户端用 `!== undefined` 合并时把
+// 首包合法值覆盖掉（ToolNotFoundError: unknown tool ""）。
+func TestForwardAsRawChatCompletions_StripsEmptyToolCallIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"weather"}],"stream":true}`)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	upstreamBody := strings.Join([]string{
+		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_example","type":"function","function":{"name":"web_search","arguments":""}}]}}]}`,
+		"",
+		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"{\"query\":"}}]}}]}`,
+		"",
+		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"name":"","arguments":"\"example\"}"}}]}}]}`,
+		"",
+		`data: {"id":"chatcmpl_tool","object":"chat.completion.chunk","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_tool_identity"}},
+		Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+	}}
+
+	svc := &OpenAIGatewayService{
+		cfg:          rawChatCompletionsTestConfig(),
+		httpUpstream: upstream,
+	}
+	account := rawChatCompletionsTestAccount()
+
+	result, err := svc.forwardAsRawChatCompletions(context.Background(), c, account, body, "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	downstream := rec.Body.String()
+	require.Contains(t, downstream, `"id":"call_example"`)
+	require.Contains(t, downstream, `"name":"web_search"`)
+	require.Contains(t, downstream, `{\"query\":`)
+	require.Contains(t, downstream, `\"example\"}`)
+	require.Contains(t, downstream, "data: [DONE]")
+	require.NotContains(t, downstream, `"id":""`)
+	require.NotContains(t, downstream, `"name":""`)
+
+	// 逐条扫下游 data payload：后续参数 delta 的 tool_calls.0.id /
+	// function.name 必须已剔除（Exists() == false），首包合法值保留。
+	followUpSeen := false
+	for _, line := range strings.Split(downstream, "\n") {
+		payload, ok := extractOpenAISSEDataLine(line)
+		if !ok {
+			continue
+		}
+		trimmed := strings.TrimSpace(payload)
+		if trimmed == "" || trimmed == "[DONE]" {
+			continue
+		}
+		delta := gjson.Get(payload, "choices.0.delta")
+		if !delta.Exists() || !delta.Get("tool_calls").Exists() {
+			continue
+		}
+		id := delta.Get("tool_calls.0.id")
+		if id.String() == "call_example" {
+			require.Equal(t, "web_search", delta.Get("tool_calls.0.function.name").String())
+			continue
+		}
+		require.False(t, id.Exists(), "empty id must be stripped: %s", payload)
+		require.False(t, delta.Get("tool_calls.0.function.name").Exists(), "empty name must be stripped: %s", payload)
+		require.NotEmpty(t, delta.Get("tool_calls.0.function.arguments").String())
+		followUpSeen = true
+	}
+	require.True(t, followUpSeen)
 }
 
 func TestForwardAsRawChatCompletions_ClientDisconnectDrainsUsage(t *testing.T) {
