@@ -227,7 +227,10 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithTimeout(parent, 55*time.Second)
+	// Error aggregation scans a high-volume log table. Keep enough time for the
+	// indexed, projected query to finish without canceling a valid run at the
+	// previous 55-second boundary.
+	ctx, cancel := context.WithTimeout(parent, 2*time.Minute)
 	defer cancel()
 	release, acquired := tryAcquireSingletonLeaderLock(ctx, nil, s.db, channelMonitorV2AggregatorLockKey, s.instanceID, 2*time.Minute)
 	if !acquired {

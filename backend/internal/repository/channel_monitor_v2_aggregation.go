@@ -272,12 +272,22 @@ WITH candidate_ids AS MATERIALIZED (
 ), eligible_errors AS (
   -- Keep the two lookup paths separate so PostgreSQL can use the created_at
   -- index for both paths instead of evaluating an IN subquery per log row.
-  SELECT e.*
+  SELECT e.id, e.request_id, e.created_at, e.group_id, e.account_id, e.platform,
+         e.requested_model, e.model, e.user_id, e.error_type, e.error_owner,
+         e.status_code, e.upstream_status_code, e.error_source, e.error_message,
+         e.upstream_error_message, e.upstream_error_detail, e.error_body,
+         e.upstream_errors, e.is_count_tokens, e.stream, e.request_type,
+         e.inbound_endpoint, e.request_path
   FROM ops_error_logs e
   WHERE NULLIF(e.request_id, '') IS NULL
     AND e.created_at >= $1 AND e.created_at < $2
   UNION ALL
-  SELECT e.*
+  SELECT e.id, e.request_id, e.created_at, e.group_id, e.account_id, e.platform,
+         e.requested_model, e.model, e.user_id, e.error_type, e.error_owner,
+         e.status_code, e.upstream_status_code, e.error_source, e.error_message,
+         e.upstream_error_message, e.upstream_error_detail, e.error_body,
+         e.upstream_errors, e.is_count_tokens, e.stream, e.request_type,
+         e.inbound_endpoint, e.request_path
   FROM ops_error_logs e
   INNER JOIN candidate_ids c ON c.request_id = e.request_id
   WHERE e.created_at >= $1 - INTERVAL '90 minutes' AND e.created_at < $2
