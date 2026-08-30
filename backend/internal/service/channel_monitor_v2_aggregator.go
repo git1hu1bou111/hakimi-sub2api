@@ -48,10 +48,11 @@ type ChannelMonitorV2Aggregator struct {
 	instanceID string
 	stopCh     chan struct{}
 	// kickCh wakes the loop early after a settings change (buffered 1).
-	kickCh    chan struct{}
-	startOnce sync.Once
-	stopOnce  sync.Once
-	mu        sync.Mutex
+	kickCh         chan struct{}
+	startOnce      sync.Once
+	stopOnce       sync.Once
+	startupLogOnce sync.Once
+	mu             sync.Mutex
 	// backfillAt is the earliest minute already recomputed (mirrors DB cursor).
 	// Zero means "not yet loaded from durable watermark this process".
 	backfillAt       time.Time
@@ -82,9 +83,11 @@ func NewChannelMonitorV2Aggregator(repo ChannelMonitorV2Repository, db *sql.DB, 
 
 func (s *ChannelMonitorV2Aggregator) Start() {
 	if s == nil || s.repo == nil {
+		logger.LegacyPrintf("service.channel_monitor_v2", "[ChannelMonitorV2] aggregator not started: repo is nil")
 		return
 	}
 	s.startOnce.Do(func() {
+		logger.LegacyPrintf("service.channel_monitor_v2", "[ChannelMonitorV2] aggregator started (settings=%t db=%t)", s.settings != nil, s.db != nil)
 		s.mu.Lock()
 		s.ctx, s.cancel = context.WithCancel(context.Background())
 		s.mu.Unlock()
@@ -150,7 +153,11 @@ func (s *ChannelMonitorV2Aggregator) loop() {
 	for {
 		interval := time.Minute
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		if !s.passiveAggregationAllowed(ctx) {
+		runtimeAllowed := s.passiveAggregationAllowed(ctx)
+		s.startupLogOnce.Do(func() {
+			logger.LegacyPrintf("service.channel_monitor_v2", "[ChannelMonitorV2] first loop: passive_allowed=%t", runtimeAllowed)
+		})
+		if !runtimeAllowed {
 			cancel()
 			if !s.wait(interval) {
 				return
