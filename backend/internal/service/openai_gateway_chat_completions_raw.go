@@ -210,14 +210,15 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 				retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, respBody)
 				legacyRetryable := isGrokAPIKeyGatewayTransientRetryableOnSameAccount(account, resp.StatusCode)
 				return nil, &UpstreamFailoverError{
-					StatusCode:               resp.StatusCode,
-					ResponseBody:             respBody,
-					ResponseHeaders:          resp.Header.Clone(),
-					RetryableOnSameAccount:   retryable || legacyRetryable,
-					RequestScopedTransient:   (retryable || legacyRetryable) && resp.StatusCode == http.StatusTooManyRequests,
-					SameAccountRetryDelay:    retryDelay,
-					SameAccountRetryDeadline: retryDeadline,
-					SameAccountRetryMax:      retryMax,
+					StatusCode:                resp.StatusCode,
+					ResponseBody:              respBody,
+					ResponseHeaders:           resp.Header.Clone(),
+					RetryableOnSameAccount:    retryable || legacyRetryable,
+					RequestScopedTransient:    (retryable || legacyRetryable) && resp.StatusCode == http.StatusTooManyRequests,
+					SkipAccountTempUnschedule: true,
+					SameAccountRetryDelay:     retryDelay,
+					SameAccountRetryDeadline:  retryDeadline,
+					SameAccountRetryMax:       retryMax,
 				}
 			}
 			return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)

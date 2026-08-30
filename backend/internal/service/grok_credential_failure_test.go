@@ -1174,8 +1174,16 @@ func TestGrokCredentialMutationCancellationAmbiguityConfirmsDurableCommit(t *tes
 
 			token, err := svc.applyGrokCredentialAccountFailure(ctx, account, tt.class)
 
-			require.ErrorIs(t, err, context.DeadlineExceeded)
 			require.Empty(t, token)
+			if tt.class.transient {
+				require.NoError(t, err)
+				require.Zero(t, repo.conditionalTempCalls)
+				require.Nil(t, account.TempUnschedulableUntil)
+				require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+				return
+			}
+
+			require.ErrorIs(t, err, context.DeadlineExceeded)
 			require.True(t, tt.committed(account), "the detached confirmation must recognize the durable mutation")
 			require.True(t, svc.isOpenAIAccountRuntimeBlocked(account), "a confirmed durable quarantine must retain its runtime block")
 			if tt.class.permanent {
@@ -1210,6 +1218,15 @@ func TestGrokCredentialInnerStateDeadlineAmbiguityConfirmsDurableCommit(t *testi
 
 			token, err := svc.applyGrokCredentialAccountFailure(context.Background(), account, tt.class)
 
+			if tt.class.transient {
+				require.NoError(t, err)
+				require.Empty(t, token)
+				require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+				require.Nil(t, account.TempUnschedulableUntil)
+				require.Empty(t, cache.deletedKeys)
+				return
+			}
+
 			require.NoError(t, err, "the detached readback must resolve the inner timeout's commit ambiguity")
 			require.Empty(t, token)
 			require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
@@ -1217,10 +1234,6 @@ func TestGrokCredentialInnerStateDeadlineAmbiguityConfirmsDurableCommit(t *testi
 				require.Equal(t, StatusError, account.Status)
 				require.False(t, account.Schedulable)
 				require.Equal(t, []string{GrokTokenCacheKey(account)}, cache.deletedKeys)
-			} else {
-				require.NotNil(t, account.TempUnschedulableUntil)
-				require.Equal(t, string(GrokCredentialReasonRefreshTransient), account.TempUnschedulableReason)
-				require.Empty(t, cache.deletedKeys)
 			}
 		})
 	}
@@ -1245,6 +1258,15 @@ func TestGrokCredentialUnconfirmedInnerStateDeadlineStopsAndRetainsSafetyBlock(t
 			svc := &OpenAIGatewayService{accountRepo: repo, grokTokenProvider: NewGrokTokenProvider(repo, cache)}
 
 			token, err := svc.applyGrokCredentialAccountFailure(context.Background(), account, tt.class)
+
+			if tt.class.transient {
+				require.NoError(t, err)
+				require.Empty(t, token)
+				require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
+				require.Nil(t, account.TempUnschedulableUntil)
+				require.Empty(t, cache.deletedKeys)
+				return
+			}
 
 			require.ErrorIs(t, err, errGrokCredentialStateUpdateFailed)
 			require.Empty(t, token)

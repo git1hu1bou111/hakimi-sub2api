@@ -1300,14 +1300,15 @@ func (s *OpenAIGatewayService) handleGrokMediaErrorResponse(
 	if kind == "failover" {
 		retryable, retryDelay, retryDeadline, retryMax := grokSameAccountRetryMetadata(account, resp.StatusCode, body)
 		return nil, &UpstreamFailoverError{
-			StatusCode:               resp.StatusCode,
-			ResponseBody:             body,
-			ResponseHeaders:          resp.Header.Clone(),
-			RetryableOnSameAccount:   retryable,
-			RequestScopedTransient:   retryable && resp.StatusCode == http.StatusTooManyRequests,
-			SameAccountRetryDelay:    retryDelay,
-			SameAccountRetryDeadline: retryDeadline,
-			SameAccountRetryMax:      retryMax,
+			StatusCode:                resp.StatusCode,
+			ResponseBody:              body,
+			ResponseHeaders:           resp.Header.Clone(),
+			RetryableOnSameAccount:    retryable,
+			RequestScopedTransient:    retryable && resp.StatusCode == http.StatusTooManyRequests,
+			SkipAccountTempUnschedule: true,
+			SameAccountRetryDelay:     retryDelay,
+			SameAccountRetryDeadline:  retryDeadline,
+			SameAccountRetryMax:       retryMax,
 		}
 	}
 

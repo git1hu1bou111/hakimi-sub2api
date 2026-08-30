@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -312,21 +311,18 @@ func TestGrokPermissionDeniedContentRefusalDoesNotMutateOrFailover(t *testing.T)
 	require.False(t, svc.shouldFailoverGrokUpstreamError(http.StatusForbidden, body))
 }
 
-func TestHandleGrokAccountUpstreamErrorEntitlement403KeepsDefaultCooldown(t *testing.T) {
+func TestHandleGrokAccountUpstreamErrorEntitlement403DoesNotTempUnschedule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 4716, Platform: PlatformGrok, Type: AccountTypeOAuth}
-	before := time.Now()
-
 	svc.handleGrokAccountUpstreamError(
 		context.Background(), account, http.StatusForbidden, nil,
 		[]byte(`{"error":{"message":"subscription required"}}`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok access or entitlement denied", repo.lastTempUnschedReason)
-	require.Greater(t, repo.lastTempUnschedUntil, before.Add(29*time.Minute))
-	require.Less(t, repo.lastTempUnschedUntil, before.Add(31*time.Minute))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestHandleGrokAccountUpstreamErrorDefaultCooldownsRespectPoolMode(t *testing.T) {
@@ -364,7 +360,7 @@ func TestHandleGrokAccountUpstreamErrorDefaultCooldownsRespectPoolMode(t *testin
 	account := &Account{Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
 	require.True(t, account.IsPoolModeRetryableStatus(http.StatusForbidden))
 
-	t.Run("explicit temporary rule still applies", func(t *testing.T) {
+	t.Run("explicit temporary rule is ignored for Grok", func(t *testing.T) {
 		repo := &grokQuotaAccountRepo{}
 		svc := &OpenAIGatewayService{accountRepo: repo}
 		account := &Account{
@@ -383,21 +379,18 @@ func TestHandleGrokAccountUpstreamErrorDefaultCooldownsRespectPoolMode(t *testin
 				},
 			},
 		}
-		before := time.Now()
-
 		svc.handleGrokAccountUpstreamError(
 			context.Background(), account, http.StatusForbidden, nil,
 			[]byte(`{"error":{"message":"grok access or entitlement denied"}}`),
 		)
 
-		require.Equal(t, 1, repo.tempUnschedCalls)
-		require.Equal(t, "grok configured forbidden rule", repo.lastTempUnschedReason)
-		require.WithinDuration(t, before.Add(7*time.Minute), repo.lastTempUnschedUntil, time.Second)
-		require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+		require.Zero(t, repo.tempUnschedCalls)
+		require.Nil(t, account.TempUnschedulableUntil)
+		require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 	})
 }
 
-func TestHandleGrokAccountUpstreamError403UsesConfiguredRule(t *testing.T) {
+func TestHandleGrokAccountUpstreamError403IgnoresConfiguredRule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{
@@ -415,19 +408,16 @@ func TestHandleGrokAccountUpstreamError403UsesConfiguredRule(t *testing.T) {
 			},
 		},
 	}
-	before := time.Now()
-
 	svc.handleGrokAccountUpstreamError(
 		context.Background(), account, http.StatusForbidden, nil,
 		[]byte(`{"error":{"message":"subscription required"}}`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Greater(t, repo.lastTempUnschedUntil, before.Add(6*time.Minute))
-	require.Less(t, repo.lastTempUnschedUntil, before.Add(8*time.Minute))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
 }
 
-func TestHandleGrokAccountUpstreamError403ConfiguredUnmatchedKeepsDefaultCooldown(t *testing.T) {
+func TestHandleGrokAccountUpstreamError403ConfiguredUnmatchedDoesNotTempUnschedule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{
@@ -451,7 +441,7 @@ func TestHandleGrokAccountUpstreamError403ConfiguredUnmatchedKeepsDefaultCooldow
 		[]byte(`{"error":{"message":"subscription required"}}`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok access or entitlement denied", repo.lastTempUnschedReason)
-	require.True(t, svc.isOpenAIAccountRuntimeBlocked(account))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }

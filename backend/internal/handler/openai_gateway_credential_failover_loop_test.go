@@ -533,10 +533,24 @@ func TestResponsesCredentialFailoverLoop(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				router.ServeHTTP(recorder, req)
 
-				require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
-				require.Contains(t, recorder.Body.String(), service.GrokCredentialUnavailableClientMessage)
-				require.Empty(t, upstream.accountHits())
-				require.Equal(t, 1, repo.selectorCalls())
+				if mode == "mutation_temp" {
+					// Grok transient refresh failures are request-scoped. They do not
+					// persist a temp quarantine, so failover can immediately use the
+					// healthy credential.
+					require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+					require.Contains(t, recorder.Body.String(), "resp_healthy")
+					require.Equal(t, []int64{802}, upstream.accountHits())
+					require.Empty(t, repo.setTempIDs)
+				} else {
+					require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+					require.Contains(t, recorder.Body.String(), service.GrokCredentialUnavailableClientMessage)
+					require.Empty(t, upstream.accountHits())
+				}
+				wantSelectorCalls := 1
+				if mode == "mutation_temp" {
+					wantSelectorCalls = 2
+				}
+				require.Equal(t, wantSelectorCalls, repo.selectorCalls())
 			})
 		}
 	})
@@ -594,7 +608,7 @@ func TestResponsesGrok429FailoverIsBounded(t *testing.T) {
 	})
 }
 
-func TestResponsesGrok402FailoverCooldown(t *testing.T) {
+func TestResponsesGrok402FailoverDoesNotQuarantineAccount(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_, repo, upstream, router, cleanup := newGrokCredentialFailoverHandler(t, "first_402")
 	defer cleanup()
@@ -607,7 +621,7 @@ func TestResponsesGrok402FailoverCooldown(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 	require.Contains(t, recorder.Body.String(), "resp_healthy")
 	require.Equal(t, []int64{801, 802}, upstream.accountHits())
-	require.Equal(t, []int64{801}, repo.setTempIDs)
+	require.Empty(t, repo.setTempIDs)
 	before := repo.selectorCalls()
 
 	second := httptest.NewRecorder()
@@ -616,8 +630,8 @@ func TestResponsesGrok402FailoverCooldown(t *testing.T) {
 	router.ServeHTTP(second, secondReq)
 
 	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
-	require.Equal(t, before+1, repo.selectorCalls())
-	require.Equal(t, []int64{801, 802, 802}, upstream.accountHits(), "cooldown must exclude the 402 account from later requests")
+	require.Equal(t, before+2, repo.selectorCalls())
+	require.Equal(t, []int64{801, 802, 801, 802}, upstream.accountHits(), "a transient 402 must not leave a durable temp quarantine")
 }
 
 func TestResponsesGrok429FailoverHandlesMixedStatuses(t *testing.T) {

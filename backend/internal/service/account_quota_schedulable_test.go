@@ -121,3 +121,16 @@ func TestAccountIsSchedulable_QuotaExceeded(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountIsSchedulable_GrokIgnoresLegacyTempUnschedulableState(t *testing.T) {
+	future := time.Now().Add(time.Hour)
+	account := &Account{
+		Platform:                PlatformGrok,
+		Status:                  StatusActive,
+		Schedulable:             true,
+		TempUnschedulableUntil:  &future,
+		TempUnschedulableReason: "legacy Grok temporary quarantine",
+	}
+
+	require.True(t, account.IsSchedulable(), "legacy Grok temp-unschedulable state must not remove the account from scheduling")
+}

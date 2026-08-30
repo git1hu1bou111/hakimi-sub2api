@@ -192,7 +192,10 @@ func (a *Account) IsSchedulable() bool {
 	if a.RateLimitResetAt != nil && now.Before(*a.RateLimitResetAt) {
 		return false
 	}
-	if a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
+	// Grok transient failures are request-scoped and must never quarantine an
+	// account. Ignore a stale legacy temp-unschedulable value as well, so an
+	// account already marked by an older build becomes eligible immediately.
+	if a.Platform != PlatformGrok && a.TempUnschedulableUntil != nil && now.Before(*a.TempUnschedulableUntil) {
 		return false
 	}
 	if a.IsAPIKeyOrBedrock() && a.IsQuotaExceeded() {

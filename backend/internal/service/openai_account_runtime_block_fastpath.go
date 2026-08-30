@@ -94,9 +94,13 @@ func isOpenAIAccount(account *Account) bool {
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) bool {
-	if isGrokAPIKeyGatewayTransientStatus(account, statusCode) ||
-		(account != nil && account.Platform == PlatformGrok && isGrokContentPolicyRejection(statusCode, responseBody)) {
-		return false
+	// Grok has its own body-aware quota, capacity, and failover handling. Some
+	// compatibility endpoints still reach this shared OpenAI hook; keep them
+	// on the Grok path so transient failures never install the generic
+	// account-level runtime block.
+	if account != nil && account.Platform == PlatformGrok {
+		s.handleGrokAccountUpstreamError(ctx, account, statusCode, headers, responseBody)
+		return s.shouldFailoverGrokUpstreamError(statusCode, responseBody)
 	}
 	// Any non-2xx upstream HTTP response means the model request was actually sent.
 	if s != nil {

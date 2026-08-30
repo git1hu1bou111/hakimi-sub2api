@@ -1030,63 +1030,9 @@ func (s *AccountTestService) observeGrokTestResponse(ctx context.Context, accoun
 	} else if s.accountRepo != nil && isSuccessfulGrokRateLimitRecovery(account, &xai.QuotaSnapshot{StatusCode: resp.StatusCode}) {
 		clearGrokRateLimitAfterRecovery(ctx, s.accountRepo, account)
 	}
-	if s.accountRepo == nil || len(responseBody) == 0 {
-		if resp.StatusCode == http.StatusPaymentRequired && s.accountRepo != nil {
-			stateCtx, cancel := openAIAccountStateContext(ctx)
-			defer cancel()
-			_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, now.Add(30*time.Minute), "grok payment required")
-		}
-		return
-	}
-	if isGrokContentPolicyRejection(resp.StatusCode, responseBody) {
-		return
-	}
-	decision := classifyGrokUpstreamFailure(resp.StatusCode, responseBody, "")
-	if decision.Class == GrokFailureFreeUsage {
-		if resetAt, limited := grokRateLimitResetAtForAccount(account, snapshot, now); limited && resetAt.After(now) {
-			persistGrokRateLimit(ctx, s.accountRepo, account, resetAt)
-		} else {
-			stateCtx, cancel := openAIAccountStateContext(ctx)
-			_ = s.accountRepo.SetTempUnschedulable(stateCtx, account.ID, now.Add(grokFreeUsageProbeCooldown), "grok free usage exhausted")
-			cancel()
-		}
-		return
-	}
-	if decision.Class == GrokFailureBilling && (isGrokSpendingLimitError(responseBody) || strings.Contains(strings.ToLower(decision.Reason), "credit")) {
-		persistGrokRateLimit(ctx, s.accountRepo, account, grokSpendingLimitResetAt(account, now))
-		return
-	}
-	cooldown := time.Duration(0)
-	reason := ""
-	switch resp.StatusCode {
-	case http.StatusUnauthorized:
-		cooldown, reason = 10*time.Minute, "grok oauth token unauthorized"
-	case http.StatusPaymentRequired:
-		cooldown, reason = 30*time.Minute, "grok payment required"
-	case http.StatusForbidden:
-		cooldown, reason = 30*time.Minute, "grok entitlement or subscription tier denied"
-	default:
-		if resp.StatusCode >= 500 {
-			cooldown, reason = 2*time.Minute, "grok upstream temporary error"
-		}
-	}
-	if decision.Class == GrokFailureBilling && cooldown == 0 {
-		cooldown, reason = 30*time.Minute, "grok payment required"
-	}
-	if cooldown > 0 {
-		stateCtx, cancel := openAIAccountStateContext(ctx)
-		defer cancel()
-		until := now.Add(cooldown)
-		if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(until) {
-			until = *account.TempUnschedulableUntil
-		}
-		_ = s.accountRepo.SetTempUnschedulable(
-			stateCtx,
-			account.ID,
-			until,
-			reason,
-		)
-	}
+	// Grok test probes may record quota snapshots and rate-limit windows, but
+	// they must never create an account-level temporary-unschedulable state.
+	return
 }
 
 func (s *AccountTestService) testGrokResponsesConnection(c *gin.Context, ctx context.Context, account *Account, authToken, testModelID string) error {

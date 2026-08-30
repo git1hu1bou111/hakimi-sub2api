@@ -1088,38 +1088,14 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		reason += ": " + logredact.RedactText(lastErr.Error())
 	}
 	if account.IsGrokOAuth() {
-		conditionalRepo, ok := s.accountRepo.(GrokOAuthRefreshMutationRepository)
-		if !ok {
-			return &providerConfigurationRefreshError{
-				err: errors.New("grok OAuth conditional refresh mutation repository is not configured"),
-			}
-		}
-		applied, setErr := conditionalRepo.SetGrokOAuthRefreshTempUnschedulableIfCredentialsUnchanged(
-			ctx,
-			account.ID,
-			account.Credentials,
-			account.ProxyID,
-			until,
-			reason,
+		// Grok accounts remain eligible after a transient refresh failure. The
+		// request path and the next refresh cycle provide bounded retry/backoff;
+		// a durable temp quarantine would make the pool disappear.
+		slog.Info("token_refresh.grok_temp_unschedulable_skipped",
+			"account_id", account.ID,
+			"until", until.Format(time.RFC3339),
+			"reason", reason,
 		)
-		if setErr != nil {
-			slog.Warn("token_refresh.set_temp_unschedulable_failed",
-				"account_id", account.ID,
-				"error", setErr,
-			)
-			return &providerCycleContainmentRefreshError{
-				err: fmt.Errorf("failed to conditionally persist Grok OAuth refresh cooldown: %w", setErr),
-			}
-		} else if !applied {
-			slog.Info("token_refresh.grok_temp_unschedulable_skipped_stale_credentials", "account_id", account.ID)
-			return errRefreshSkipped
-		} else {
-			s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
-			slog.Info("token_refresh.temp_unschedulable_set",
-				"account_id", account.ID,
-				"until", until.Format(time.RFC3339),
-			)
-		}
 		return lastErr
 	}
 

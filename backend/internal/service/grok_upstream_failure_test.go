@@ -187,21 +187,17 @@ func TestShouldFailoverGrokUpstreamError_ContentPolicyStillNoFailover(t *testing
 	require.False(t, svc.shouldFailoverGrokUpstreamError(http.StatusForbidden, body))
 }
 
-func TestHandleGrokAccountUpstreamError_FreeUsageBodyCoolsAccount(t *testing.T) {
+func TestHandleGrokAccountUpstreamError_FreeUsageBodyDoesNotTempUnschedule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 9101, Platform: PlatformGrok, Type: AccountTypeOAuth}
-	before := time.Now()
 	body := []byte(`{"error":{"code":"subscription:free-usage-exhausted","message":"You've used all the included free usage. Usage resets over a rolling 24-hour window."}}`)
 
 	svc.handleGrokAccountUpstreamError(context.Background(), account, http.StatusBadRequest, nil, body)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok free usage exhausted", repo.lastTempUnschedReason)
-	// Rolling-window exhaustion must use a short probe cooldown when no
-	// upstream absolute reset is available; it must not start a 24h lock here.
-	require.Greater(t, repo.lastTempUnschedUntil, before.Add(grokFreeUsageProbeCooldown-time.Second))
-	require.Less(t, repo.lastTempUnschedUntil, before.Add(grokFreeUsageProbeCooldown+time.Second))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestHandleGrokAccountUpstreamError_FreeUsageUsesUpstreamReset(t *testing.T) {
@@ -217,20 +213,18 @@ func TestHandleGrokAccountUpstreamError_FreeUsageUsesUpstreamReset(t *testing.T)
 	require.WithinDuration(t, time.Now().Add(time.Hour), repo.lastRateLimitResetAt, 2*time.Second)
 }
 
-func TestHandleGrokAccountUpstreamError_EmptyOutputCoolsAccount(t *testing.T) {
+func TestHandleGrokAccountUpstreamError_EmptyOutputDoesNotTempUnschedule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 9102, Platform: PlatformGrok, Type: AccountTypeOAuth}
-	before := time.Now()
-
 	svc.handleGrokAccountUpstreamError(
 		context.Background(), account, http.StatusBadGateway, nil,
 		[]byte(`empty model output: no content/tool_calls`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok empty model output", repo.lastTempUnschedReason)
-	require.WithinDuration(t, before.Add(4*time.Minute), repo.lastTempUnschedUntil, time.Second)
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }
 
 func TestHandleGrokAccountUpstreamError_MultiAgentCapacityBlocksOnlyThatModel(t *testing.T) {
@@ -292,19 +286,16 @@ func TestHandleGrokAccountUpstreamError_ContentPolicyStillNoMutation(t *testing.
 	require.Zero(t, repo.tempUnschedCalls)
 }
 
-func TestHandleGrokAccountUpstreamError_Entitlement403Unchanged(t *testing.T) {
+func TestHandleGrokAccountUpstreamError_Entitlement403DoesNotTempUnschedule(t *testing.T) {
 	repo := &grokQuotaAccountRepo{}
 	svc := &OpenAIGatewayService{accountRepo: repo}
 	account := &Account{ID: 9105, Platform: PlatformGrok, Type: AccountTypeOAuth}
-	before := time.Now()
-
 	svc.handleGrokAccountUpstreamError(
 		context.Background(), account, http.StatusForbidden, nil,
 		[]byte(`{"error":{"message":"subscription required"}}`),
 	)
 
-	require.Equal(t, 1, repo.tempUnschedCalls)
-	require.Equal(t, "grok access or entitlement denied", repo.lastTempUnschedReason)
-	require.Greater(t, repo.lastTempUnschedUntil, before.Add(29*time.Minute))
-	require.Less(t, repo.lastTempUnschedUntil, before.Add(31*time.Minute))
+	require.Zero(t, repo.tempUnschedCalls)
+	require.Nil(t, account.TempUnschedulableUntil)
+	require.False(t, svc.isOpenAIAccountRuntimeBlocked(account))
 }

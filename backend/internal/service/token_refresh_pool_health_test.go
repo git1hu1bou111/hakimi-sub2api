@@ -908,7 +908,7 @@ func TestTokenRefreshService_AttemptTimeoutTripsRetryableProviderThreshold(t *te
 	_, _, setErrorCalls, setTempUnschedCalls := repo.snapshot()
 	require.Equal(t, int64(2), refresher.calls.Load(), "two attempt timeouts should trip the retryable provider threshold")
 	require.Zero(t, setErrorCalls)
-	require.Equal(t, 2, setTempUnschedCalls, "attempt timeouts remain account-transient failures before containment opens")
+	require.Zero(t, setTempUnschedCalls, "Grok attempt timeouts must not create account temp-unschedulable state")
 }
 
 func TestTokenRefreshService_ParentCancellationStopsRetryWithoutAccountMutation(t *testing.T) {
@@ -950,7 +950,7 @@ func TestTokenRefreshService_LateSuccessPastAttemptDeadlineIsRejected(t *testing
 	_, updatedIDs, setErrorCalls, setTempUnschedCalls := repo.snapshot()
 	require.Empty(t, updatedIDs, "credentials returned after the deadline must not be persisted")
 	require.Zero(t, setErrorCalls)
-	require.Equal(t, 1, setTempUnschedCalls)
+	require.Zero(t, setTempUnschedCalls, "Grok attempt timeout must not create account temp-unschedulable state")
 }
 
 func TestTokenRefreshService_NonRetryableGrokFailureInvalidatesTokenCache(t *testing.T) {

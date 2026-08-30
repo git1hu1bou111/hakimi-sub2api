@@ -675,22 +675,23 @@ type GatewayFailureReason string
 // trigger account failover. Additive metadata keeps existing composite literals
 // source-compatible and preserves their legacy retry-next-account behavior.
 type UpstreamFailoverError struct {
-	StatusCode               int
-	ResponseBody             []byte        // 上游响应体，用于错误透传规则匹配
-	ResponseHeaders          http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
-	ForceCacheBilling        bool          // Antigravity 粘性会话切换时设为 true
-	RetryableOnSameAccount   bool          // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
-	SameAccountRetryDelay    time.Duration // 同账号重试的最小间隔；零值使用 handler 默认值
-	SameAccountRetryDeadline time.Time     // 同账号重试截止时间；零值表示仅受 retryLimit 限制
-	SameAccountRetryMax      int           // 可选的错误级同账号重试上限，低于 handler 默认预算时优先采用
-	RequestScopedTransient   bool          // 故障因素与账号无关（如上游按客户端身份/模型容量降载）：可同账号重试，但不得据此对账号做临时封禁
-	SafeToFailoverAfterWrite bool          // 仅写出 SSE 注释等非语义字节时，仍可在同一客户端流中切换账号
-	Stage                    GatewayFailureStage
-	Scope                    GatewayFailureScope
-	Reason                   GatewayFailureReason
-	NextAccountAction        NextAccountAction
-	ClientStatusCode         int
-	ClientMessage            string
+	StatusCode                int
+	ResponseBody              []byte        // 上游响应体，用于错误透传规则匹配
+	ResponseHeaders           http.Header   // 上游响应头，用于透传 cf-ray/cf-mitigated/content-type 等诊断信息
+	ForceCacheBilling         bool          // Antigravity 粘性会话切换时设为 true
+	RetryableOnSameAccount    bool          // 临时性错误（如 Google 间歇性 400、空响应），应在同一账号上重试 N 次再切换
+	SameAccountRetryDelay     time.Duration // 同账号重试的最小间隔；零值使用 handler 默认值
+	SameAccountRetryDeadline  time.Time     // 同账号重试截止时间；零值表示仅受 retryLimit 限制
+	SameAccountRetryMax       int           // 可选的错误级同账号重试上限，低于 handler 默认预算时优先采用
+	RequestScopedTransient    bool          // 故障因素与账号无关（如上游按客户端身份/模型容量降载）：可同账号重试，但不得据此对账号做临时封禁
+	SkipAccountTempUnschedule bool          // 调用方已确认账号级临时封存不适用（当前用于 Grok 的瞬时故障）
+	SafeToFailoverAfterWrite  bool          // 仅写出 SSE 注释等非语义字节时，仍可在同一客户端流中切换账号
+	Stage                     GatewayFailureStage
+	Scope                     GatewayFailureScope
+	Reason                    GatewayFailureReason
+	NextAccountAction         NextAccountAction
+	ClientStatusCode          int
+	ClientMessage             string
 }
 
 func (e *UpstreamFailoverError) Error() string {
@@ -729,10 +730,10 @@ type sseStreamErrorEventError struct {
 
 func (e *sseStreamErrorEventError) Error() string { return "have error in stream" }
 
-// TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
-// 由 handler 层在同账号重试全部用尽、切换账号时调用。
+// TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误
+// 触发临时封禁。Grok 错误通过 SkipAccountTempUnschedule 跳过此副作用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
-	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
+	if failoverErr == nil || !failoverErr.RetryableOnSameAccount || failoverErr.SkipAccountTempUnschedule {
 		return
 	}
 	// 请求级瞬时故障与账号健康无关：封禁只会把与故障无关的账号一并摘掉，

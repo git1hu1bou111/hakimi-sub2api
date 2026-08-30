@@ -892,15 +892,16 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				return resultWithUsage(), fmt.Errorf("stream usage incomplete after timeout")
 			}
 			logger.LegacyPrintf("service.openai_gateway", "Stream data interval timeout: account=%d model=%s interval=%s", account.ID, originalModel, streamInterval)
-			// 处理流超时，可能标记账户为临时不可调度或错误状态
+			// 其他平台按全局流超时策略处理；Grok 由下面的 failover error
+			// 负责有限重试，不写账号级临时不可调度状态。
 			if s.rateLimitService != nil {
 				s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 			}
-			// Grok: short cool + account failover when no client-visible bytes
-			// were committed yet (pre-commit). After output started we keep the
-			// legacy stream_timeout path so partial SSE is not dual-written.
+			// Grok: bounded same-account retry + account failover when no
+			// client-visible bytes were committed yet (pre-commit). After output
+			// started we keep the legacy stream_timeout path so partial SSE is not
+			// dual-written.
 			if account != nil && account.Platform == PlatformGrok {
-				s.tempUnscheduleGrok(ctx, account, grokStreamIdleCooldown, "grok stream idle timeout")
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) && !eventShouldFlush {
 					_ = resp.Body.Close()
 					return resultWithUsage(), grokStreamIdleFailoverError(account, streamInterval)

@@ -1428,29 +1428,34 @@ func TestPathA_GrokPermanentFailureCASLetsConcurrentAccountRepairWin(t *testing.
 
 func TestPathA_GrokTransientFailureCASLetsConcurrentAccountRepairWin(t *testing.T) {
 	tests := []struct {
-		name      string
-		configure func(*tokenRefreshAccountRepo)
-		assert    func(*testing.T, *Account)
+		name        string
+		upstreamErr error
+		configure   func(*tokenRefreshAccountRepo)
+		assert      func(*testing.T, *Account)
 	}{
 		{
-			name: "credential reauthorization",
+			name:        "credential reauthorization",
+			upstreamErr: errors.New("temporary provider timeout"),
 			configure: func(repo *tokenRefreshAccountRepo) {
 				repo.reauthorizeOnTempCAS = true
 			},
 			assert: func(t *testing.T, account *Account) {
-				require.Equal(t, "fresh-refresh", account.GetGrokRefreshToken())
+				require.Equal(t, "attempted-refresh", account.GetGrokRefreshToken(),
+					"transient Grok refresh failures must not mutate credentials")
 			},
 		},
 		{
-			name: "proxy repair",
+			name:        "proxy repair",
+			upstreamErr: errors.New("temporary provider timeout"),
 			configure: func(repo *tokenRefreshAccountRepo) {
 				repo.repairProxyOnTempCAS = true
 			},
 			assert: func(t *testing.T, account *Account) {
 				require.NotNil(t, account.ProxyID)
-				require.Equal(t, int64(902), *account.ProxyID)
+				require.Equal(t, int64(901), *account.ProxyID,
+					"transient Grok refresh failures must not mutate proxy state")
 				require.Equal(t, "attempted-refresh", account.GetGrokRefreshToken(),
-					"proxy-only repair must prove the proxy fingerprint independently of credentials")
+					"transient Grok refresh failures must not mutate credentials")
 			},
 		},
 	}
@@ -1479,12 +1484,13 @@ func TestPathA_GrokTransientFailureCASLetsConcurrentAccountRepairWin(t *testing.
 			service, _ := buildPathAService(repo, cache, invalidator)
 			blocker := &tokenRefreshRuntimeBlocker{}
 			service.SetAccountRuntimeBlocker(blocker)
-			refresher := &tokenRefresherStub{err: errors.New("temporary provider timeout")}
+			refresher := &tokenRefresherStub{err: tt.upstreamErr}
 
 			err := service.refreshWithRetry(context.Background(), account, refresher, refresher, time.Hour)
 
-			require.ErrorIs(t, err, errRefreshSkipped)
-			require.Equal(t, 1, repo.conditionalTempCalls)
+			require.Error(t, err)
+			require.ErrorIs(t, err, tt.upstreamErr)
+			require.Zero(t, repo.conditionalTempCalls)
 			require.Zero(t, repo.setTempUnschedCalls)
 			require.Zero(t, blocker.blockCalls)
 			require.Equal(t, StatusActive, account.Status)
@@ -1523,11 +1529,18 @@ func TestTokenRefreshService_GrokMissingConditionalMutationContractContainsProvi
 
 			err := svc.refreshWithRetry(context.Background(), account, refresher, nil, time.Hour)
 
-			var providerErr *providerConfigurationRefreshError
-			require.ErrorAs(t, err, &providerErr)
-			state := &tokenRefreshProviderState{service: svc}
-			state.recordResult(err)
-			require.True(t, state.isTripped(), "a missing safety contract must stop the provider cycle")
+			if tt.name == "transient failure" {
+				require.ErrorIs(t, err, tt.refreshErr)
+				state := &tokenRefreshProviderState{service: svc}
+				state.recordResult(err)
+				require.False(t, state.isTripped(), "a transient Grok refresh failure must not trip the provider")
+			} else {
+				var providerErr *providerConfigurationRefreshError
+				require.ErrorAs(t, err, &providerErr)
+				state := &tokenRefreshProviderState{service: svc}
+				state.recordResult(err)
+				require.True(t, state.isTripped(), "a missing safety contract must stop the provider cycle")
+			}
 			require.Equal(t, StatusActive, account.Status)
 			require.True(t, account.Schedulable)
 		})
@@ -1587,6 +1600,21 @@ func TestTokenRefreshService_GrokConditionalMutationErrorsContainProviderCycle(t
 			err := svc.refreshWithRetry(context.Background(), account, refresher, nil, time.Hour)
 
 			var containmentErr *providerCycleContainmentRefreshError
+			if tt.name == "transient failure" {
+				require.ErrorIs(t, err, tt.upstreamErr)
+				require.Zero(t, tt.expectedCASCalls(repo))
+				state := &tokenRefreshProviderState{service: svc}
+				state.recordResult(err)
+				require.False(t, state.isTripped())
+				require.Zero(t, repo.setErrorCalls)
+				require.Zero(t, repo.setTempUnschedCalls)
+				require.Zero(t, blocker.blockCalls)
+				require.Zero(t, invalidator.calls)
+				require.Equal(t, StatusActive, account.Status)
+				require.True(t, account.Schedulable)
+				return
+			}
+
 			require.ErrorAs(t, err, &containmentErr)
 			require.ErrorIs(t, err, casErr)
 			require.NotErrorIs(t, err, tt.upstreamErr, "a CAS execution failure must replace the stale upstream classification")
