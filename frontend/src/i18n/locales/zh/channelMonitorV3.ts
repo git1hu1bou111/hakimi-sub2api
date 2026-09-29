@@ -2,6 +2,20 @@
 export default {
   channelMonitorV3: {
     title: '渠道状态',
+    intelligence: {
+      title: '降智状态',
+      interval: '每分钟检测',
+      window: '近 {count} 分钟 · 仅显示已检测记录',
+      noData: '等待检测',
+      legend: '21 绿 · 其他答案黄 · 隐藏错误和空白',
+      groupLegend: '任一调度账号答对为绿 · 全部检测失败为黄',
+      groupYellow: '全部检测失败',
+      green: '正常',
+      yellow: '答案异常',
+      red: '超时或错误',
+      unknown: '暂无检测',
+      stale: '检测已过期',
+    },
     description: 'V2 被动用量 · 缓存率与可用率',
     updatedTo: '更新至 {time}',
     partialCoverage: '部分历史覆盖',
@@ -18,6 +32,7 @@ export default {
     allModels: '全部模型',
     userRate: '用户倍率',
     unknownGroup: '未知分组',
+    groupCount: '{count} 个分组',
     timelineTooltip: '{time} · 可用率 {availability} · 缓存率 {cache} · 首 Token {ttft}',
     emptyTitle: '暂无渠道数据',
     emptyDescription: '当前时间范围内还没有可展示的被动监控数据',

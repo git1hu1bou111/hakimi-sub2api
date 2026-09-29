@@ -166,6 +166,26 @@ export interface MonitorMatrixRow {
   metrics: MonitorMetric
   health: MonitorHealth
   buckets: MonitorMatrixBucket[]
+  intelligence?: IntelligenceUptime
+}
+
+export type IntelligenceStatus = 'green' | 'yellow' | 'red' | 'unknown' | 'stale'
+export interface IntelligencePoint {
+  checked_at: string
+  status: IntelligenceStatus
+  latency_ms: number
+}
+export interface IntelligenceUptime {
+  model: string
+  reasoning_effort: string
+  interval_seconds: number
+  timeout_seconds: number
+  status: IntelligenceStatus
+  checked_at?: string
+  points: IntelligencePoint[]
+  window_start?: string
+  bucket_seconds?: number
+  window_points?: number
 }
 
 export interface MonitorMatrixResponse {

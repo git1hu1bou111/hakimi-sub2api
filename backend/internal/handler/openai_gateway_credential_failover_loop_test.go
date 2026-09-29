@@ -533,24 +533,12 @@ func TestResponsesCredentialFailoverLoop(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				router.ServeHTTP(recorder, req)
 
-				if mode == "mutation_temp" {
-					// Grok transient refresh failures are request-scoped. They do not
-					// persist a temp quarantine, so failover can immediately use the
-					// healthy credential.
-					require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-					require.Contains(t, recorder.Body.String(), "resp_healthy")
-					require.Equal(t, []int64{802}, upstream.accountHits())
-					require.Empty(t, repo.setTempIDs)
-				} else {
-					require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
-					require.Contains(t, recorder.Body.String(), service.GrokCredentialUnavailableClientMessage)
-					require.Empty(t, upstream.accountHits())
-				}
-				wantSelectorCalls := 1
-				if mode == "mutation_temp" {
-					wantSelectorCalls = 2
-				}
-				require.Equal(t, wantSelectorCalls, repo.selectorCalls())
+				// OAuth credential-state writes follow the official atomic recovery
+				// contract; ordinary gateway transient retries are tested separately.
+				require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+				require.Contains(t, recorder.Body.String(), service.GrokCredentialUnavailableClientMessage)
+				require.Empty(t, upstream.accountHits())
+				require.Equal(t, 1, repo.selectorCalls())
 			})
 		}
 	})

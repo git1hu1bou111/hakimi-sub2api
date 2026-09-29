@@ -389,10 +389,62 @@ func (s *OpenAIGatewayService) applyGrokCredentialAccountFailure(ctx context.Con
 	}
 
 	if class.transient {
-		// Grok transient refresh failures are request-scoped. Keep the account
-		// eligible and let the caller's bounded failover/retry loop try another
-		// credential; persisting a temporary quarantine defeats that behavior.
-		slog.Info("grok_credential_transient_temp_unschedule_skipped", "account_id", account.ID, "reason", class.reason)
+		until := time.Now().Add(tokenRefreshTempUnschedDuration)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		rollbackRuntime := s.blockGrokCredentialRuntime(account, until, string(class.reason))
+		keepRuntimeBlock := false
+		runtimeRollbackDone := false
+		defer func() {
+			if !keepRuntimeBlock && !runtimeRollbackDone {
+				rollbackRuntime()
+			}
+		}()
+		stateCtx, cancel := context.WithTimeout(ctx, grokCredentialMutationTimeout)
+		if s.accountRepo == nil {
+			cancel()
+			keepRuntimeBlock = true
+			return "", fmt.Errorf("%w: account repository is not configured", errGrokCredentialStateUpdateFailed)
+		}
+		if !hasConditionalStateRepo {
+			cancel()
+			keepRuntimeBlock = true
+			return "", fmt.Errorf("%w: conditional account repository is not configured", errGrokCredentialStateUpdateFailed)
+		}
+		if err := ctx.Err(); err != nil {
+			cancel()
+			return "", err
+		}
+		updated, err := stateRepo.SetGrokCredentialTempUnschedulableIfMatch(stateCtx, account.ID, snapshot, until, string(class.reason))
+		requestErr := ctx.Err()
+		cancel()
+		if err != nil {
+			slog.Warn("grok_credential_failure.set_temp_unschedulable_failed", "account_id", account.ID, "reason", class.reason, "error", err)
+			if requestErr != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				if s.grokCredentialMutationCommitted(account.ID, class, until) {
+					updated = true
+				} else if requestErr != nil {
+					return "", requestErr
+				} else {
+					keepRuntimeBlock = true
+					return "", fmt.Errorf("%w: transient state commit could not be confirmed: %v", errGrokCredentialStateUpdateFailed, err)
+				}
+			} else {
+				keepRuntimeBlock = true
+				return "", fmt.Errorf("%w: persist transient state: %v", errGrokCredentialStateUpdateFailed, err)
+			}
+		}
+		if !updated {
+			rollbackRuntime()
+			runtimeRollbackDone = true
+			return s.resolveGrokCredentialCASMiss(ctx, account.ID, snapshot)
+		}
+		// The temporary quarantine is durable after SetTempUnschedulable succeeds.
+		keepRuntimeBlock = true
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		return "", nil
 	}
 
@@ -595,6 +647,10 @@ func (s *OpenAIGatewayService) newGrokCredentialFailover(c *gin.Context, account
 		class.message = "Grok OAuth credentials are unavailable"
 	}
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		// Credential acquisition happens before the inference transport opens,
+		// so the account binding is not evidence of an inference proxy route.
+		ProxyID:   nil,
+		ProxyName: opsProxyNameUnknown,
 		Platform:  PlatformGrok,
 		AccountID: account.ID,
 		Stage:     string(GatewayFailureStageAccountAuth),
@@ -604,12 +660,11 @@ func (s *OpenAIGatewayService) newGrokCredentialFailover(c *gin.Context, account
 		Message:   class.message,
 	})
 	return &UpstreamFailoverError{
-		Stage:                     GatewayFailureStageAccountAuth,
-		Scope:                     class.scope,
-		Reason:                    class.reason,
-		SkipAccountTempUnschedule: true,
-		NextAccountAction:         class.action,
-		ClientStatusCode:          http.StatusServiceUnavailable,
-		ClientMessage:             GrokCredentialUnavailableClientMessage,
+		Stage:             GatewayFailureStageAccountAuth,
+		Scope:             class.scope,
+		Reason:            class.reason,
+		NextAccountAction: class.action,
+		ClientStatusCode:  http.StatusServiceUnavailable,
+		ClientMessage:     GrokCredentialUnavailableClientMessage,
 	}
 }

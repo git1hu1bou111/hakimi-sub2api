@@ -35,6 +35,7 @@
       :countdown-seconds="countdownSeconds"
       :length="timelineLength"
     />
+    <IntelligenceUptime v-if="row.platform === 'openai'" :uptime="row.intelligence" :coverage="coverage" />
   </article>
 </template>
 
@@ -42,17 +43,19 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitorStatus } from '@/api/admin/channelMonitor'
-import type { MonitorMatrixRow } from '@/api/channelMonitorV2'
+import type { MonitorMatrixRow, MonitorCoverage } from '@/api/channelMonitorV2'
 import { availabilityTextClass, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import ProviderIcon from './ProviderIcon.vue'
 import ChannelMonitorV3Timeline from './ChannelMonitorV3Timeline.vue'
+import IntelligenceUptime from './IntelligenceUptime.vue'
 
 const props = defineProps<{
   row: MonitorMatrixRow
   countdownSeconds: number
   timelineLength: number
   userRateMultiplier?: number | null
+  coverage?: MonitorCoverage
 }>()
 const { t } = useI18n()
 const { statusLabel, statusBadgeClass, providerLabel, providerBadgeClass } = useChannelMonitorFormat()

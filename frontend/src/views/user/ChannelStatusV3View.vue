@@ -28,15 +28,35 @@
         <div v-for="i in 8" :key="i" class="h-72 animate-pulse rounded-[24px] bg-white/60 dark:bg-dark-800" />
       </div>
       <EmptyState v-else-if="rows.length === 0" :title="t('channelMonitorV3.emptyTitle')" :description="t('channelMonitorV3.emptyDescription')" />
-      <div v-else class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-        <ChannelMonitorV3Card
-          v-for="row in rows"
-          :key="row.group_id ?? `${row.platform}:${row.group_name ?? ''}`"
-          :row="row"
-          :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
-          :countdown-seconds="countdownSeconds"
-          :timeline-length="timelineLength"
-        />
+      <div v-else class="space-y-8">
+        <section
+          v-for="(section, index) in platformSections"
+          :key="section.platform"
+          :aria-labelledby="`monitor-platform-${index}`"
+          :data-platform="section.platform"
+          class="space-y-4"
+        >
+          <h2 :id="`monitor-platform-${index}`" class="flex items-center gap-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
+            <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full" :class="providerGradient(section.platform)" aria-hidden="true">
+              <ProviderIcon :provider="section.platform" :size="16" />
+            </span>
+            <span>{{ providerLabel(section.platform) }}</span>
+            <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium tabular-nums text-gray-500 dark:bg-dark-700 dark:text-gray-400" :aria-label="t('channelMonitorV3.groupCount', { count: section.rows.length })">
+              {{ section.rows.length }}
+            </span>
+          </h2>
+          <div class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            <ChannelMonitorV3Card
+              v-for="row in section.rows"
+              :key="row.group_id"
+              :row="row"
+              :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
+              :countdown-seconds="countdownSeconds"
+              :timeline-length="timelineLength"
+              :coverage="matrix?.coverage"
+            />
+          </div>
+        </section>
       </div>
     </div>
   </AppLayout>
@@ -52,12 +72,15 @@ import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import * as api from '@/api/channelMonitorV2'
 import userGroupsAPI from '@/api/groups'
-import type { MonitorFilter, MonitorMatrixResponse, MonitorRange, MonitorSnapshot } from '@/api/channelMonitorV2'
+import type { MonitorFilter, MonitorMatrixResponse, MonitorMatrixRow, MonitorRange, MonitorSnapshot } from '@/api/channelMonitorV2'
 import type { Group } from '@/types'
 import ChannelMonitorV3Card from '@/components/user/monitor/ChannelMonitorV3Card.vue'
+import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
+import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import { formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 
 const { t, locale } = useI18n()
+const { providerLabel } = useChannelMonitorFormat()
 const appStore = useAppStore()
 const ranges = computed(() => [
   { value: '90m' as MonitorRange, label: t('channelMonitorV3.ranges.90m') },
@@ -81,6 +104,22 @@ let countdownTimer: number | null = null
 const rows = computed(() => [...(matrix.value?.items ?? [])]
   .filter(row => row.group_id != null && row.group_id > 0)
   .sort((a, b) => (a.group_id ?? 0) - (b.group_id ?? 0)))
+const platformOrder = ['openai', 'anthropic', 'grok', 'gemini']
+const platformSections = computed(() => {
+  const groups = new Map<string, MonitorMatrixRow[]>()
+  for (const row of rows.value) {
+    const group = groups.get(row.platform)
+    if (group) group.push(row)
+    else groups.set(row.platform, [row])
+  }
+  const rank = (platform: string) => {
+    const index = platformOrder.indexOf(platform)
+    return index < 0 ? platformOrder.length : index
+  }
+  // Preserve every returned platform, including ones added by future providers.
+  return [...groups].map(([platform, rows]) => ({ platform, rows }))
+    .sort((a, b) => rank(a.platform) - rank(b.platform) || a.platform.localeCompare(b.platform))
+})
 const timelineLength = computed(() => ({ '90m': 18, '24h': 24, '7d': 14, '30d': 30 })[filter.value.range])
 const latestSnapshotMetrics = computed(() => {
   const trend = [...(snapshot.value?.trend ?? [])]
@@ -128,7 +167,9 @@ async function reload(silent = true) {
     if (request.signal.aborted || controller !== request) return
     snapshot.value = nextSnapshot
     matrix.value = nextMatrix
-    scheduleRefresh(nextSnapshot.coverage.bootstrap?.active ? 10 : nextSnapshot.config.refresh_interval_seconds)
+    // Active intelligence probes must not wait for the passive monitor's
+    // optional five-minute refresh. Keep the faster bootstrap polling intact.
+    scheduleRefresh(nextSnapshot.coverage.bootstrap?.active ? 10 : Math.min(60, nextSnapshot.config.refresh_interval_seconds))
   } catch (error) {
     const e = error as { name?: string; code?: string }
     if (e.name !== 'AbortError' && e.code !== 'ERR_CANCELED') appStore.showError(extractApiErrorMessage(error, t('channelMonitorV3.loadFailed')))

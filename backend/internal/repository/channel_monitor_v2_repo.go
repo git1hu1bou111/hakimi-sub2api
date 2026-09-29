@@ -115,6 +115,13 @@ type channelMonitorV2Histogram struct {
 }
 
 func (r *channelMonitorV2Repository) GetDimensions(ctx context.Context, filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config) (*service.ChannelMonitorV2Dimensions, error) {
+	if channelMonitorV2RestrictedGroupScopeEmpty(filter, cfg) {
+		return &service.ChannelMonitorV2Dimensions{
+			Platforms: []service.ChannelMonitorV2Dimension{},
+			Groups:    []service.ChannelMonitorV2GroupDimension{},
+			Models:    []service.ChannelMonitorV2Dimension{},
+		}, nil
+	}
 	coverage, err := r.loadCoverage(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -211,6 +218,9 @@ func (r *channelMonitorV2Repository) GetDimensions(ctx context.Context, filter s
 }
 
 func (r *channelMonitorV2Repository) GetSnapshot(ctx context.Context, filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, admin bool) (*service.ChannelMonitorV2Snapshot, error) {
+	if channelMonitorV2RestrictedGroupScopeEmpty(filter, cfg) {
+		return &service.ChannelMonitorV2Snapshot{Trend: []service.ChannelMonitorV2TrendPoint{}}, nil
+	}
 	coverage, err := r.loadCoverage(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -275,6 +285,9 @@ func (r *channelMonitorV2Repository) GetSnapshot(ctx context.Context, filter ser
 }
 
 func (r *channelMonitorV2Repository) GetModels(ctx context.Context, filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, admin bool) (*service.ChannelMonitorV2List[service.ChannelMonitorV2ModelRow], error) {
+	if channelMonitorV2RestrictedGroupScopeEmpty(filter, cfg) {
+		return &service.ChannelMonitorV2List[service.ChannelMonitorV2ModelRow]{Items: []service.ChannelMonitorV2ModelRow{}}, nil
+	}
 	coverage, err := r.loadCoverage(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -353,6 +366,9 @@ type channelMonitorV2MatrixAccumulator struct {
 }
 
 func (r *channelMonitorV2Repository) GetMatrix(ctx context.Context, filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, groupBy service.ChannelMonitorV2GroupBy, admin bool) (*service.ChannelMonitorV2Matrix, error) {
+	if channelMonitorV2RestrictedGroupScopeEmpty(filter, cfg) {
+		return &service.ChannelMonitorV2Matrix{GroupBy: groupBy, Items: []service.ChannelMonitorV2MatrixRow{}}, nil
+	}
 	coverage, err := r.loadCoverage(ctx, filter)
 	if err != nil {
 		return nil, err
@@ -615,6 +631,14 @@ func channelMonitorV2ScopedGroupIDs(filter service.ChannelMonitorV2Filter, cfg s
 		}
 	}
 	return groups, false
+}
+
+func channelMonitorV2RestrictedGroupScopeEmpty(filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config) bool {
+	if !filter.RestrictGroups {
+		return false
+	}
+	_, empty := channelMonitorV2ScopedGroupIDs(filter, cfg)
+	return empty
 }
 
 type channelMonitorV2GroupInfo struct {
@@ -929,7 +953,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 		} else {
 			args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = "date_bin($1::interval,m.bucket_start,TIMESTAMPTZ '1970-01-01')"
+			bucketExpr = channelMonitorV2DateBinExpr("m.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
@@ -971,7 +995,7 @@ func (r *channelMonitorV2Repository) loadHistograms(ctx context.Context, filter 
 			args = []any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}
 			args = append(args, oldArgs...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = "date_bin($1::interval,h.bucket_start,TIMESTAMPTZ '1970-01-01')"
+			bucketExpr = channelMonitorV2DateBinExpr("h.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
@@ -1424,7 +1448,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCounts(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = "date_bin($1::interval,e.bucket_start,TIMESTAMPTZ '1970-01-01')"
+		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
 		groupBy = bucketExpr + ", e.platform, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)
@@ -1520,7 +1544,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCountsByMatrixKey(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = "date_bin($1::interval,e.bucket_start,TIMESTAMPTZ '1970-01-01')"
+		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
 		groupSQL = bucketExpr + ", e.platform, e.group_id, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)

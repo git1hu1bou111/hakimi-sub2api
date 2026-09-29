@@ -245,13 +245,14 @@ type ChannelMonitorV2ModelRow struct {
 }
 
 type ChannelMonitorV2MatrixRow struct {
-	Platform  string                       `json:"platform"`
-	GroupID   *int64                       `json:"group_id,omitempty"`
-	GroupName string                       `json:"group_name,omitempty"`
-	Model     string                       `json:"model,omitempty"`
-	Metrics   ChannelMonitorV2Metric       `json:"metrics"`
-	Health    ChannelMonitorV2Health       `json:"health"`
-	Buckets   []ChannelMonitorV2TrendPoint `json:"buckets"`
+	Platform     string                       `json:"platform"`
+	GroupID      *int64                       `json:"group_id,omitempty"`
+	GroupName    string                       `json:"group_name,omitempty"`
+	Model        string                       `json:"model,omitempty"`
+	Metrics      ChannelMonitorV2Metric       `json:"metrics"`
+	Health       ChannelMonitorV2Health       `json:"health"`
+	Buckets      []ChannelMonitorV2TrendPoint `json:"buckets"`
+	Intelligence *IntelligenceUptime          `json:"intelligence,omitempty"`
 }
 
 type ChannelMonitorV2Matrix struct {
@@ -377,9 +378,10 @@ func ChannelMonitorV2BootstrapProgress(now, coveredFrom time.Time, hasData bool)
 }
 
 type ChannelMonitorV2Service struct {
-	repo     ChannelMonitorV2Repository
-	settings channelMonitorRuntimeReader
-	now      func() time.Time
+	repo         ChannelMonitorV2Repository
+	settings     channelMonitorRuntimeReader
+	now          func() time.Time
+	intelligence *ChannelMonitorIntelligence
 }
 
 func NewChannelMonitorV2Service(repo ChannelMonitorV2Repository) *ChannelMonitorV2Service {
@@ -404,6 +406,18 @@ func (s *ChannelMonitorV2Service) hideThroughputForViewer(ctx context.Context, a
 		return true
 	}
 	return s.settings.GetChannelMonitorRuntime(ctx).HideThroughput
+}
+
+func (s *ChannelMonitorV2Service) hideUserRankingForViewer(ctx context.Context, admin bool) bool {
+	if admin {
+		return false
+	}
+	// Missing reader keeps the current ranking tab visible. Unlike throughput,
+	// ranking is already public and must stay on until an operator turns it off.
+	if s == nil || s.settings == nil {
+		return false
+	}
+	return s.settings.GetChannelMonitorRuntime(ctx).HideUserRanking
 }
 
 func (s *ChannelMonitorV2Service) GetConfig(ctx context.Context) (*ChannelMonitorV2Config, error) {
@@ -517,6 +531,11 @@ func (s *ChannelMonitorV2Service) Matrix(ctx context.Context, filter ChannelMoni
 	matrix, err := s.repo.GetMatrix(ctx, filter, *cfg, groupBy, admin)
 	if err != nil {
 		return nil, err
+	}
+	if s.intelligence != nil {
+		if err := s.intelligence.Attach(ctx, matrix, filter); err != nil {
+			return nil, err
+		}
 	}
 	if !admin && matrix != nil {
 		hideTP := s.hideThroughputForViewer(ctx, admin)
@@ -652,6 +671,9 @@ func (s *ChannelMonitorV2Service) Users(ctx context.Context, filter ChannelMonit
 	cfg, err := s.getEnabledConfig(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if s.hideUserRankingForViewer(ctx, admin) {
+		return &ChannelMonitorV2List[ChannelMonitorV2UserRow]{Items: []ChannelMonitorV2UserRow{}}, nil
 	}
 	result, err := s.repo.GetUsers(ctx, filter, *cfg, admin)
 	if err != nil {

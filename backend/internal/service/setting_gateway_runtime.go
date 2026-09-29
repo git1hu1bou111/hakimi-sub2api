@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"golang.org/x/sync/singleflight"
 )
@@ -53,6 +54,7 @@ const backendModeDBTimeout = 5 * time.Second
 
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
+	openAITTFTMode                   string
 	fingerprintUnification           bool
 	metadataPassthrough              bool
 	cchSigning                       bool
@@ -117,6 +119,19 @@ const openAICodexClientVersionDBTimeout = 5 * time.Second
 
 // openAICodexClientVersionSFKey singleflight 键。
 const openAICodexClientVersionSFKey = "openai_codex_client_version"
+
+// cachedClaudeCodeClientVersion 缓存出站 Claude Code 客户端版本号（进程内缓存，60s TTL）
+type cachedClaudeCodeClientVersion struct {
+	version   string
+	expiresAt int64 // unix nano
+}
+
+const claudeCodeClientVersionCacheTTL = 60 * time.Second
+const claudeCodeClientVersionErrorTTL = 5 * time.Second
+const claudeCodeClientVersionDBTimeout = 5 * time.Second
+
+// claudeCodeClientVersionSFKey singleflight 键。
+const claudeCodeClientVersionSFKey = "claude_code_client_version"
 
 type cachedOpenAIQuotaAutoPauseSettings struct {
 	settings  OpsOpenAIAccountQuotaAutoPauseSettings
@@ -293,7 +308,8 @@ func (s *SettingService) GetOpenAICodexUserAgent(ctx context.Context) string {
 			})
 			return fallback, nil
 		}
-		ua := strings.TrimSpace(value)
+		// Preserve invalid header bytes for canonical identity validation.
+		ua := strings.Trim(value, " \t")
 		if ua == "" {
 			ua = fallback
 		}
@@ -376,6 +392,101 @@ func (s *SettingService) InvalidateOpenAICodexClientVersionCache() {
 	s.openAICodexVersionCache.Store((*cachedOpenAICodexClientVersion)(nil))
 }
 
+// NormalizeClaudeCodeClientVersion 校验并归一化 Claude Code 客户端版本号，非法值返回空串。
+// 容忍前导 "v" 与首尾空白；合法性复用 claude.IsSupportedCLIVersion（严格三段纯数字 semver、
+// 无预发布/构建后缀、且不低于内置基线）。
+func NormalizeClaudeCodeClientVersion(version string) string {
+	normalized := strings.TrimSpace(version)
+	normalized = strings.TrimPrefix(normalized, "v")
+	if normalized == "" {
+		return ""
+	}
+	if !claude.IsSupportedCLIVersion(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+// GetClaudeCodeClientVersion 返回出站声明的 Claude Code CLI 客户端版本号。
+// 优先级：管理员在面板覆写的版本 → 自动同步到的官方最新版本 → claude.CLIVersion()
+// （环境变量 SUB2API_CLAUDE_CLI_VERSION 覆盖 + 内置基线）。
+// 版本太旧会被 Anthropic 拒绝（HTTP 400 claude_code_version_too_old），故该值需保持跟随官方发布。
+//
+// ⚠️ 一致性约束：同一次请求里，拼 User-Agent（claude-cli/<版本>）的版本号和用于
+// billing attribution 的版本号必须是同一个值，否则 Anthropic 侧对不上、判为非正版客户端。
+// 因此调用点必须在一次请求内只取一次本函数并复用；本缓存的唯一主动变更点是
+// 同步任务写入后调用 InvalidateClaudeCodeClientVersionCache，60s TTL 不会在极短时间内抖动。
+func (s *SettingService) GetClaudeCodeClientVersion(ctx context.Context) string {
+	fallback := claude.CLIVersion()
+	if s == nil || s.settingRepo == nil {
+		return fallback
+	}
+	if cached, ok := s.claudeCodeVersionCache.Load().(*cachedClaudeCodeClientVersion); ok && cached != nil {
+		if time.Now().UnixNano() < cached.expiresAt {
+			return cached.version
+		}
+	}
+
+	result, _, _ := s.claudeCodeVersionSF.Do(claudeCodeClientVersionSFKey, func() (any, error) {
+		if cached, ok := s.claudeCodeVersionCache.Load().(*cachedClaudeCodeClientVersion); ok && cached != nil {
+			if time.Now().UnixNano() < cached.expiresAt {
+				return cached.version, nil
+			}
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), claudeCodeClientVersionDBTimeout)
+		defer cancel()
+		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyClaudeCodeClientVersion,
+			SettingKeyClaudeCodeClientVersionSynced,
+		})
+		if err != nil {
+			slog.Warn("failed to get claude code client version setting", "error", err)
+			s.claudeCodeVersionCache.Store(&cachedClaudeCodeClientVersion{
+				version:   fallback,
+				expiresAt: time.Now().Add(claudeCodeClientVersionErrorTTL).UnixNano(),
+			})
+			return fallback, nil
+		}
+		version := NormalizeClaudeCodeClientVersion(values[SettingKeyClaudeCodeClientVersion])
+		if version == "" {
+			if raw := values[SettingKeyClaudeCodeClientVersion]; strings.TrimSpace(raw) != "" {
+				slog.Warn("ignoring invalid claude_code_client_version setting; falling back to the next layer",
+					"value", raw)
+			}
+			version = NormalizeClaudeCodeClientVersion(values[SettingKeyClaudeCodeClientVersionSynced])
+			if version == "" && strings.TrimSpace(values[SettingKeyClaudeCodeClientVersionSynced]) != "" {
+				slog.Warn("ignoring invalid claude_code_client_version_synced setting; falling back to the built-in pin",
+					"value", values[SettingKeyClaudeCodeClientVersionSynced])
+			}
+		}
+		if version == "" {
+			version = fallback
+		}
+		s.claudeCodeVersionCache.Store(&cachedClaudeCodeClientVersion{
+			version:   version,
+			expiresAt: time.Now().Add(claudeCodeClientVersionCacheTTL).UnixNano(),
+		})
+		return version, nil
+	})
+	if version, ok := result.(string); ok && version != "" {
+		return version
+	}
+	return fallback
+}
+
+// InvalidateClaudeCodeClientVersionCache 丢弃版本号缓存，下次读取回源。
+// 面板保存与自动同步写入后调用。
+func (s *SettingService) InvalidateClaudeCodeClientVersionCache() {
+	if s == nil {
+		return
+	}
+	s.claudeCodeVersionSF.Forget(claudeCodeClientVersionSFKey)
+	s.claudeCodeVersionCache.Store((*cachedClaudeCodeClientVersion)(nil))
+}
+
 // GetOpenAICodexCanonicalUserAgent 返回出站规范 Codex User-Agent。
 // 未填面板 UA 时按当前生效的客户端版本号拼出标准 Codex TUI UA。
 //
@@ -388,16 +499,14 @@ func (s *SettingService) GetOpenAICodexCanonicalUserAgent(ctx context.Context) s
 		return codexCLIUserAgent
 	}
 	version := s.GetOpenAICodexClientVersion(ctx)
-	ua := strings.TrimSpace(s.GetOpenAICodexUserAgent(ctx))
-	if ua == "" {
-		return buildCodexCLIUserAgent(version)
+	ua := s.GetOpenAICodexUserAgent(ctx)
+	if _, pairedUA, ok := openai.PairCodexClientIdentity(ua); ok {
+		if rebuilt := openai.SetCodexUserAgentVersion(pairedUA, version); rebuilt != "" {
+			return rebuilt
+		}
 	}
-	if rebuilt := openai.SetCodexUserAgentVersion(ua, version); rebuilt != "" {
-		return rebuilt
-	}
-	// 非 `{client}/{version}` 形态：交给 PairCodexClientIdentity 判定，
-	// 推导不出官方身份时由收口整体回退规范身份。
-	return ua
+	// Invalid fingerprints must not discard the independently resolved version.
+	return buildCodexCLIUserAgent(version)
 }
 
 var legacyClaudeCodeCodexWhitelistEntry = openai.AllowedClientEntry{
@@ -736,6 +845,7 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
+	openAITTFTMode                                                                        string
 	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
 	clientDatelineNormalization                                                           bool
 	claudeOAuthSystemPrompt, claudeOAuthSystemPromptBlocks                                string
@@ -745,6 +855,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
+				openAITTFTMode:                   cached.openAITTFTMode,
 				fp:                               cached.fingerprintUnification,
 				mp:                               cached.metadataPassthrough,
 				cch:                              cached.cchSigning,
@@ -761,6 +872,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
+					openAITTFTMode:                   cached.openAITTFTMode,
 					fp:                               cached.fingerprintUnification,
 					mp:                               cached.metadataPassthrough,
 					cch:                              cached.cchSigning,
@@ -776,6 +888,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyOpenAITTFTMode,
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
 			SettingKeyEnableCCHSigning,
@@ -789,6 +902,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
 			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+				openAITTFTMode:                   OpenAITTFTModeSemantic,
 				fingerprintUnification:           true,
 				metadataPassthrough:              false,
 				cchSigning:                       false,
@@ -798,8 +912,9 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				clientDatelineNormalization:      true,
 				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
+			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
 		}
+		ttftMode := normalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 			fp = v == "true"
@@ -822,6 +937,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			clientDatelineNormalization = v == "true"
 		}
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+			openAITTFTMode:                   ttftMode,
 			fingerprintUnification:           fp,
 			metadataPassthrough:              mp,
 			cchSigning:                       cch,
@@ -834,6 +950,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			expiresAt:                        time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
+			openAITTFTMode:                   ttftMode,
 			fp:                               fp,
 			mp:                               mp,
 			cch:                              cch,
@@ -849,6 +966,11 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		return r
 	}
 	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
+}
+
+// GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。
+func (s *SettingService) GetOpenAITTFTMode(ctx context.Context) string {
+	return s.getGatewayForwardingSettingsCached(ctx).openAITTFTMode
 }
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.

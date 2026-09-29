@@ -87,8 +87,12 @@ func TestFilterGrokFreeQuotaAccountsOnlyBlocksExplicitFreeOAuth(t *testing.T) {
 		return repo.calls >= 1
 	}, 2*time.Second, 10*time.Millisecond)
 
-	// Second pass: uses refreshed cache and blocks over-gate free OAuth.
-	filtered = scheduler.filterGrokFreeQuotaAccounts(context.Background(), accounts)
+	// A repository call starts before the async worker publishes its cache.
+	// Wait for the observable gate rather than racing the publication step.
+	require.Eventually(t, func() bool {
+		filtered = scheduler.filterGrokFreeQuotaAccounts(context.Background(), accounts)
+		return len(filtered) == 3
+	}, 2*time.Second, 10*time.Millisecond)
 	require.Equal(t, []int64{2, 3, 4}, accountIDs(filtered), "paid and unknown fail-open; API-key free marker is not gated")
 	require.Equal(t, []int64{1}, repo.lastIDs, "paid, unknown, and API-key accounts must not enter the local free-tier query")
 	require.WithinDuration(t, time.Now().UTC().Add(-24*time.Hour), repo.start, time.Second)

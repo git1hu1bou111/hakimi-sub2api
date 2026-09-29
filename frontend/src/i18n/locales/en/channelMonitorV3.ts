@@ -2,6 +2,20 @@
 export default {
   channelMonitorV3: {
     title: 'Channel status',
+    intelligence: {
+      title: 'Intelligence status',
+      interval: 'Checked every minute',
+      window: 'Last {count} min · recorded checks only',
+      noData: 'Waiting for a check',
+      legend: '21 green · other answers yellow · errors and gaps hidden',
+      groupLegend: 'Any schedulable account passes: green · all fail: yellow',
+      groupYellow: 'All checks failed',
+      green: 'Passed',
+      yellow: 'Answer mismatch',
+      red: 'Timeout or error',
+      unknown: 'No samples',
+      stale: 'Probe stale',
+    },
     description: 'V2 passive usage · cache and availability',
     updatedTo: 'Updated to {time}',
     partialCoverage: 'Partial history coverage',
@@ -18,6 +32,7 @@ export default {
     allModels: 'All models',
     userRate: 'User rate',
     unknownGroup: 'Unknown group',
+    groupCount: '{count} groups',
     timelineTooltip: '{time} · Availability {availability} · Cache {cache} · First token {ttft}',
     emptyTitle: 'No channel data',
     emptyDescription: 'There is no passive-monitor data for this time range yet',

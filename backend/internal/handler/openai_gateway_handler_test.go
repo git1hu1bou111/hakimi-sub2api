@@ -176,7 +176,7 @@ func TestOpenAIResponsesRequiredCapability(t *testing.T) {
 func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *testing.T) {
 	body := []byte(`{"model":"claude-sonnet-4-5","metadata":{"user_id":"claude-code-session"},"messages":[{"role":"user","content":"hello"}]}`)
 
-	sessionHash, promptCacheKey := resolveOpenAIMessagesMetadataSession("", "", "claude-sonnet-4-5", body)
+	sessionHash, promptCacheKey := resolveOpenAIMessagesMetadataSession(nil, "", "", "claude-sonnet-4-5", body)
 
 	require.NotEmpty(t, sessionHash)
 	require.Empty(t, promptCacheKey)
@@ -185,10 +185,56 @@ func TestResolveOpenAIMessagesMetadataSession_DoesNotDerivePromptCacheKey(t *tes
 func TestResolveOpenAIMessagesMetadataSession_PreservesExplicitPromptCacheKey(t *testing.T) {
 	body := []byte(`{"metadata":{"user_id":"claude-code-session"}}`)
 
-	sessionHash, promptCacheKey := resolveOpenAIMessagesMetadataSession("", "explicit-cache", "claude-sonnet-4-5", body)
+	sessionHash, promptCacheKey := resolveOpenAIMessagesMetadataSession(nil, "", "explicit-cache", "claude-sonnet-4-5", body)
 
 	require.NotEmpty(t, sessionHash)
 	require.Equal(t, "explicit-cache", promptCacheKey)
+}
+
+func TestResolveOpenAIMessagesMetadataSession_ClaudeCodeHeaderOverridesContentFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-001")
+
+	body1 := []byte(`{"model":"gpt-5.6-sol","system":"parent","messages":[{"role":"user","content":"parent task"}]}`)
+	body2 := []byte(`{"model":"gpt-5.6-sol","system":"subagent","messages":[{"role":"user","content":"child task"}]}`)
+
+	contentHash1 := (&service.OpenAIGatewayService{}).GenerateSessionHash(c, body1)
+	contentHash2 := (&service.OpenAIGatewayService{}).GenerateSessionHash(c, body2)
+	require.NotEqual(t, contentHash1, contentHash2, "different bodies should prove the content fallback differs")
+
+	hash1, cacheKey1 := resolveOpenAIMessagesMetadataSession(c, contentHash1, "", "gpt-5.6-sol", body1)
+	hash2, cacheKey2 := resolveOpenAIMessagesMetadataSession(c, contentHash2, "", "gpt-5.6-sol", body2)
+	require.Equal(t, service.DeriveSessionHashFromSeed("claude-session-001"), hash1)
+	require.Equal(t, hash1, hash2, "the same Claude Code session must keep one sticky account across changed turn bodies")
+	require.Empty(t, cacheKey1, "routing-only fix must not create an upstream prompt cache key")
+	require.Empty(t, cacheKey2, "routing-only fix must not create an upstream prompt cache key")
+}
+
+func TestResolveOpenAIMessagesMetadataSession_OpenAISignalWinsOverClaudeHeader(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "claude-session-001")
+
+	hash, cacheKey := resolveOpenAIMessagesMetadataSession(c, "content-hash", "explicit-openai-session", "gpt-5.6-sol", []byte(`{"metadata":{"user_id":"opaque"}}`))
+	require.Equal(t, "content-hash", hash, "existing OpenAI session resolution must remain authoritative")
+	require.Equal(t, "explicit-openai-session", cacheKey)
+}
+
+func TestResolveOpenAIMessagesMetadataSession_BlankClaudeHeaderKeepsContentFallback(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("X-Claude-Code-Session-Id", "   ")
+
+	hash, cacheKey := resolveOpenAIMessagesMetadataSession(c, "content-hash", "", "gpt-5.6-sol", []byte(`{"metadata":{"user_id":"opaque"}}`))
+	require.Equal(t, "content-hash", hash)
+	require.Empty(t, cacheKey)
 }
 
 func TestOpenAIHandleStreamingAwareError_NonStreaming(t *testing.T) {
@@ -333,6 +379,20 @@ func TestOpenAIEnsureForwardErrorResponse_AfterDeltaAppendsSingleValidResponseFa
 		}
 	}
 	require.Equal(t, 1, errorEvents)
+}
+
+func TestOpenAIEnsureForwardErrorResponse_PreservesCommittedStreamError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, EndpointResponses, nil)
+	body := "event: error\ndata: {\"type\":\"error\",\"code\":\"upstream_stream_read_error\",\"message\":\"Upstream response stream was interrupted\",\"param\":null,\"sequence_number\":0}\n\n"
+	_, err := c.Writer.WriteString(body)
+	require.NoError(t, err)
+	service.MarkResponseCommitted(c)
+	h := &OpenAIGatewayHandler{}
+	require.False(t, h.ensureForwardErrorResponse(c, true))
+	require.Equal(t, body, w.Body.String(), "preserve the service error without a second terminal event")
 }
 
 func TestOpenAIEnsureForwardErrorResponse_CompactKeepaliveOnlyWritesResponseFailed(t *testing.T) {
@@ -1484,7 +1544,7 @@ func TestOpenAIResponsesWebSocket_PassthroughTracksModelPerTurn(t *testing.T) {
 		"each turn must be billed with its own channel-mapped model")
 }
 
-func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKeysRemainsValid(t *testing.T) {
+func TestOpenAIResponsesWebSocket_ChannelMappedTargetSelectsAccountWithoutRequestedAlias(t *testing.T) {
 	got := runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
 		firstPayload:  `{"type":"response.create","model":"public-alias","stream":false}`,
 		secondPayload: `{"type":"response.create","stream":false}`,
@@ -1492,7 +1552,7 @@ func TestOpenAIResponsesWebSocket_UnchangedChannelTargetOutsideAccountMappingKey
 			"public-alias": "gpt-5.6-sol",
 		},
 		accountModelMapping: map[string]any{
-			"public-alias": "gpt-5.6-terra",
+			"gpt-5.6-sol": "gpt-5.6-sol",
 		},
 	})
 
@@ -1662,6 +1722,40 @@ func TestOpenAIAccountScheduleModelUsesActualOrSharedResolver(t *testing.T) {
 
 	setOpsSelectedAccount(c, account.ID, account.Platform)
 	require.Equal(t, "attempt-actual", openAIAccountScheduleModel(c, account, "public", true, nil))
+}
+
+func TestOpenAIChannelForwardModelForScheduler(t *testing.T) {
+	tests := []struct {
+		name      string
+		mapping   service.ChannelMappingResult
+		requested string
+		want      string
+	}{
+		{
+			name:      "mapped model is used for capability filtering",
+			mapping:   service.ChannelMappingResult{Mapped: true, MappedModel: "  gpt-forward  "},
+			requested: "client-alias",
+			want:      "gpt-forward",
+		},
+		{
+			name:      "unmapped request preserves client model",
+			mapping:   service.ChannelMappingResult{MappedModel: "client-model"},
+			requested: "client-model",
+			want:      "client-model",
+		},
+		{
+			name:      "empty mapped model safely preserves client model",
+			mapping:   service.ChannelMappingResult{Mapped: true, MappedModel: "  "},
+			requested: "client-model",
+			want:      "client-model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIChannelForwardModel(tt.mapping, tt.requested))
+		})
+	}
 }
 
 func TestShouldReportOpenAIWSProxyAccountFailure(t *testing.T) {
@@ -1836,7 +1930,12 @@ func newOpenAIWSHandlerTestServer(t *testing.T, h *OpenAIGatewayHandler, subject
 }
 
 type openAIResponsesWSUsageLogCase struct {
-	firstPayload              string
+	simpleModeRejectAtRead int64
+	closeReason            string
+	firstPayload           string
+	// midPayload 在首个 turn 完成后发送（如 session.update），上游桩会为它
+	// 回一个 response.completed，客户端按普通事件读取。
+	midPayload                string
 	secondPayload             string
 	userAgent                 *string
 	ingressMode               string
@@ -1844,6 +1943,12 @@ type openAIResponsesWSUsageLogCase struct {
 	billingModelSource        string
 	accountModelMapping       map[string]any
 	afterFirstUpstreamRequest func(channelSvc *service.ChannelService) error
+	// group 覆盖 apiKey.Group（分组级模型白名单测试用）；nil 保持原有无分组行为。
+	group *service.Group
+	// firstFrameCloseExpected：首帧即被拒（连接被 1008 关闭），不期待任何响应帧。
+	firstFrameCloseExpected bool
+	// secondTurnCloseExpected：第二个 turn 被拒（连接被 1008 关闭）。
+	secondTurnCloseExpected bool
 }
 
 type openAIResponsesWSUsageLogResult struct {
@@ -2763,8 +2868,11 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	gin.SetMode(gin.TestMode)
 
 	turnCount := 1
+	if strings.TrimSpace(tc.midPayload) != "" {
+		turnCount++
+	}
 	if strings.TrimSpace(tc.secondPayload) != "" {
-		turnCount = 2
+		turnCount++
 	}
 	upstreamPayloadCh := make(chan []byte, turnCount)
 	upstreamErrCh := make(chan error, 1)
@@ -2868,10 +2976,16 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 				BillingModelSource: tc.billingModelSource,
 			}},
 			groupPlatforms: map[int64]string{groupID: service.PlatformOpenAI},
-		}, nil, nil, nil)
+		}, nil, nil, nil, nil)
 	}
 
-	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)
+	var keyRepo service.APIKeyRepository
+	if tc.simpleModeRejectAtRead > 0 {
+		cfg.SimpleModeKeyRateLimitEnabled = true
+		keyRepo = &simpleModeWSRateLimitRepo{rejectAt: tc.simpleModeRejectAtRead}
+	}
+	billingCacheSvc := service.NewBillingCacheService(nil, nil, nil, keyRepo, nil, nil, cfg, nil)
+	t.Cleanup(billingCacheSvc.Stop)
 	gatewaySvc := service.NewOpenAIGatewayService(
 		accountRepo,
 		usageRepo,
@@ -2906,6 +3020,7 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		},
 	}
 	h := &OpenAIGatewayHandler{
+		cfg:                 cfg,
 		gatewayService:      gatewaySvc,
 		billingCacheService: billingCacheSvc,
 		apiKeyService:       &service.APIKeyService{},
@@ -2916,6 +3031,12 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		ID:      1801,
 		GroupID: &groupID,
 		User:    &service.User{ID: 1701, Status: service.StatusActive},
+	}
+	if tc.simpleModeRejectAtRead > 0 {
+		apiKey.RateLimit5h = 1
+	}
+	if tc.group != nil {
+		apiKey.Group = tc.group
 	}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -2948,6 +3069,23 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 	cancelWrite()
 	require.NoError(t, err)
 
+	if tc.firstFrameCloseExpected {
+		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+		_, _, readErr := clientConn.Read(readCtx)
+		cancelRead()
+		require.Error(t, readErr, "first frame should have been rejected with a close")
+		var closeErr coderws.CloseError
+		require.ErrorAs(t, readErr, &closeErr)
+		require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+		reason := tc.closeReason
+		if reason == "" {
+			reason = "not available for this group"
+		}
+		require.Contains(t, closeErr.Reason, reason)
+		_ = clientConn.CloseNow()
+		return openAIResponsesWSUsageLogResult{}
+	}
+
 	clientEvents := make([][]byte, 0, turnCount)
 	readCompleted := func() {
 		readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2958,11 +3096,34 @@ func runOpenAIResponsesWebSocketUsageLogCase(t *testing.T, tc openAIResponsesWSU
 		clientEvents = append(clientEvents, append([]byte(nil), event...))
 	}
 	readCompleted()
-	if turnCount == 2 {
+	if tc.midPayload != "" {
+		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
+		err = clientConn.Write(writeCtx, coderws.MessageText, []byte(tc.midPayload))
+		cancelWrite()
+		require.NoError(t, err)
+		readCompleted()
+	}
+	if strings.TrimSpace(tc.secondPayload) != "" && (turnCount >= 2) {
 		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 3*time.Second)
 		err = clientConn.Write(writeCtx, coderws.MessageText, []byte(tc.secondPayload))
 		cancelWrite()
 		require.NoError(t, err)
+		if tc.secondTurnCloseExpected {
+			readCtx, cancelRead := context.WithTimeout(context.Background(), 3*time.Second)
+			_, _, readErr := clientConn.Read(readCtx)
+			cancelRead()
+			require.Error(t, readErr, "second turn should have been rejected with a close")
+			var closeErr coderws.CloseError
+			require.ErrorAs(t, readErr, &closeErr)
+			require.Equal(t, coderws.StatusPolicyViolation, closeErr.Code)
+			reason := tc.closeReason
+			if reason == "" {
+				reason = "not available for this group"
+			}
+			require.Contains(t, closeErr.Reason, reason)
+			_ = clientConn.CloseNow()
+			return openAIResponsesWSUsageLogResult{}
+		}
 		readCompleted()
 	}
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
@@ -3071,4 +3232,38 @@ data: {"type":"response.failed","error":{"message":"This content was flagged"}}
 
 		require.False(t, openAIForwardErrorAlreadyCommunicated(c, c.Writer.Size(), errors.New("openai cyber_policy: blocked")))
 	})
+}
+
+// The loader simulates window usage reaching its limit while a connection is
+// waiting for its first account or between completed WebSocket turns.
+type simpleModeWSRateLimitRepo struct {
+	service.APIKeyRepository
+	reads    atomic.Int64
+	rejectAt int64
+}
+
+func (r *simpleModeWSRateLimitRepo) GetRateLimitData(context.Context, int64) (*service.APIKeyRateLimitData, error) {
+	now := time.Now()
+	usage := 0.0
+	if r.reads.Add(1) >= r.rejectAt {
+		usage = 1
+	}
+	return &service.APIKeyRateLimitData{Usage5h: usage, Window5hStart: &now}, nil
+}
+func TestOpenAIResponsesWebSocketSimpleModeRechecksKeyWindows(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeCtxPool} {
+		t.Run(mode+"/after-account-selection", func(t *testing.T) {
+			runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				firstPayload: `{"type":"response.create","model":"gpt-5.1"}`,
+				ingressMode:  mode, simpleModeRejectAtRead: 2, firstFrameCloseExpected: true, closeReason: "billing check failed",
+			})
+		})
+		t.Run(mode+"/followup-turn", func(t *testing.T) {
+			runOpenAIResponsesWebSocketUsageLogCase(t, openAIResponsesWSUsageLogCase{
+				firstPayload:  `{"type":"response.create","model":"gpt-5.1"}`,
+				secondPayload: `{"type":"response.create","model":"gpt-5.1"}`,
+				ingressMode:   mode, simpleModeRejectAtRead: 3, secondTurnCloseExpected: true, closeReason: "billing check failed",
+			})
+		})
+	}
 }

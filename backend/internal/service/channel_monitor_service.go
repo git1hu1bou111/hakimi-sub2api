@@ -628,9 +628,11 @@ func (s *ChannelMonitorService) RunCheck(ctx context.Context, id int64) ([]*Chec
 	default:
 		results = s.runChecksConcurrent(ctx, m)
 	}
-	// Preserve Hakimi's consecutive-failure dampening for all probe results,
-	// while retaining upstream v0.1.181's quota and quota_probe dispatch.
-	s.applyFailureThresholds(ctx, m.ID, results)
+	// Damp transient model probes, not quota/configuration errors. Quota-only
+	// mode must preserve the official fail-closed result without an LLM streak.
+	if checkMode != MonitorCheckModeQuota {
+		s.applyFailureThresholds(ctx, m.ID, results)
+	}
 	s.persistCheckResults(ctx, m, results)
 	return results, nil
 }
