@@ -117,7 +117,14 @@ export default {
         lastUsed: '最近使用',
         createdAt: '创建时间',
         expiresAt: '过期时间',
+        liveMetrics: '实时指标',
         actions: '操作'
+      },
+      liveMetrics: {
+        cache: '缓存',
+        ttft: '首字',
+        errors: '报错',
+        idle: '未使用'
       },
       schedulerScore: {
         baseShort: '普通',

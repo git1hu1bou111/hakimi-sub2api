@@ -266,7 +266,14 @@ export default {
         lastUsed: 'Last Used',
         createdAt: 'Created',
         expiresAt: 'Expires At',
+        liveMetrics: 'Live Metrics',
         actions: 'Actions'
+      },
+      liveMetrics: {
+        cache: 'Cache',
+        ttft: 'TTFT',
+        errors: 'Errors',
+        idle: 'Idle'
       },
       schedulerScore: {
         baseShort: 'Base',

@@ -90,6 +90,28 @@ func (h *AccountHandler) GetIntelligenceHistory(c *gin.Context) {
 	response.Success(c, views)
 }
 
+// GetLiveMetrics 返回一批账号的实时快照：近 10 分钟缓存率与首字、近 1 小时报错率。
+// POST /api/v1/admin/accounts/live-metrics
+func (h *AccountHandler) GetLiveMetrics(c *gin.Context) {
+	var req struct {
+		AccountIDs []int64 `json:"account_ids" binding:"required,min=1,max=200,dive,gt=0"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, http.StatusBadRequest, "Invalid account IDs")
+		return
+	}
+	if h.intelligence == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Account live metrics unavailable")
+		return
+	}
+	views, err := h.intelligence.AccountLiveMetrics(c.Request.Context(), req.AccountIDs)
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Failed to read account live metrics")
+		return
+	}
+	response.Success(c, views)
+}
+
 // SetUpstreamBillingProbeService attaches the optional remote billing probe service.
 func (h *AccountHandler) SetUpstreamBillingProbeService(probe *service.UpstreamBillingProbeService) {
 	h.upstreamBillingProbe = probe

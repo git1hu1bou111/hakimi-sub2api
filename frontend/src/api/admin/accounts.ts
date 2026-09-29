@@ -15,6 +15,24 @@ export async function getIntelligenceHistory(accountIDs: number[]): Promise<Acco
   const { data } = await apiClient.post<AccountIntelligenceView[]>('/admin/accounts/intelligence/history', { account_ids: accountIDs })
   return data
 }
+/** 账号实时快照：近 10 分钟缓存率/首字 + 近 1 小时报错率（不落库，读使用记录现算） */
+export interface AccountLiveMetrics {
+  account_id: number
+  requests_10m: number
+  prompt_tokens_10m: number
+  cache_read_10m: number
+  cache_hit_pct: number
+  ttft_p50_ms: number
+  ttft_samples: number
+  requests_1h: number
+  error_requests_1h: number
+  error_rate_pct: number
+  computed_at: string
+}
+export async function getLiveMetrics(accountIDs: number[]): Promise<AccountLiveMetrics[]> {
+  const { data } = await apiClient.post<AccountLiveMetrics[]>('/admin/accounts/live-metrics', { account_ids: accountIDs })
+  return data
+}
 import type { OpenAIReferralRefreshResult, OpenAIReferralSendResult } from '@/types/openaiReferrals'
 import type {
   Account,
@@ -1145,6 +1163,8 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
 export const accountsAPI = {
   list,
   listWithEtag,
+  getIntelligenceHistory,
+  getLiveMetrics,
   getUpstreamBillingRatesWithEtag,
   getById,
   create,
