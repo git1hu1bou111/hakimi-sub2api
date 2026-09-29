@@ -103,6 +103,7 @@ type ChannelMonitorV2Metric struct {
 	ErrorRate                float64                 `json:"error_rate"`
 	SuccessRate              float64                 `json:"success_rate"`
 	CacheRate                float64                 `json:"cache_rate"`
+	CacheRateWarm            float64                 `json:"cache_rate_warm"`
 	CacheRateNumerator       int64                   `json:"cache_rate_numerator"`
 	CacheRateDenominator     int64                   `json:"cache_rate_denominator"`
 	TTFT                     ChannelMonitorV2Latency `json:"ttft"`
@@ -656,6 +657,7 @@ func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool
 	m.TokenCount = 0
 	m.CacheRateNumerator = 0
 	m.CacheRateDenominator = 0
+	m.CacheRateWarm = 0
 	// Latency sample_count is also a volume signal.
 	m.TTFT.SampleCount = 0
 	m.Duration.SampleCount = 0

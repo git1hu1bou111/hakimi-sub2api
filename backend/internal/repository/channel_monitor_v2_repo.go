@@ -104,6 +104,7 @@ type channelMonitorV2Fact struct {
 	GroupID                                             int64
 	Success, Errors, UpstreamAffected, UpstreamAttempts int64
 	Input, Output, CacheCreation, CacheRead             int64
+	CacheSampleRead, CacheSamplePrompt                  int64
 	TTFTSum, TTFTCount, DurationSum, DurationCount      int64
 }
 
@@ -957,7 +958,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 			group = bucketExpr + "," + group
 		}
 	}
-	query := `SELECT ` + bucketExpr + `,m.platform,m.group_id,COALESCE(g.name,''),m.model,SUM(m.success_requests),SUM(m.error_requests),SUM(m.upstream_affected_requests),SUM(m.upstream_attempt_count),SUM(m.input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count) FROM ` + channelMonitorV2MetricsTable(filter) + ` m LEFT JOIN groups g ON g.id=NULLIF(m.group_id,0) ` + where + ` GROUP BY ` + group
+	query := `SELECT ` + bucketExpr + `,m.platform,m.group_id,COALESCE(g.name,''),m.model,SUM(m.success_requests),SUM(m.error_requests),SUM(m.upstream_affected_requests),SUM(m.upstream_attempt_count),SUM(m.input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.cache_sample_read_tokens),SUM(m.cache_sample_prompt_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count) FROM ` + channelMonitorV2MetricsTable(filter) + ` m LEFT JOIN groups g ON g.id=NULLIF(m.group_id,0) ` + where + ` GROUP BY ` + group
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -967,7 +968,7 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 	for rows.Next() {
 		var bucket time.Time
 		var f channelMonitorV2Fact
-		if err := rows.Scan(&bucket, &f.Platform, &f.GroupID, &f.GroupName, &f.Model, &f.Success, &f.Errors, &f.UpstreamAffected, &f.UpstreamAttempts, &f.Input, &f.Output, &f.CacheCreation, &f.CacheRead, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount); err != nil {
+		if err := rows.Scan(&bucket, &f.Platform, &f.GroupID, &f.GroupName, &f.Model, &f.Success, &f.Errors, &f.UpstreamAffected, &f.UpstreamAttempts, &f.Input, &f.Output, &f.CacheCreation, &f.CacheRead, &f.CacheSampleRead, &f.CacheSamplePrompt, &f.TTFTSum, &f.TTFTCount, &f.DurationSum, &f.DurationCount); err != nil {
 			return nil, err
 		}
 		f.BucketStart = bucket.UTC().Format(time.RFC3339Nano)
@@ -1317,7 +1318,7 @@ func shiftSQLPlaceholders(query string, offset int) string {
 }
 
 type metricAccumulator struct {
-	success, errors, upstreamAffected, upstreamAttempts, input, output, cacheCreation, cacheRead, ttftSum, ttftCount, durationSum, durationCount int64
+	success, errors, upstreamAffected, upstreamAttempts, input, output, cacheCreation, cacheRead, cacheSampleRead, cacheSamplePrompt, ttftSum, ttftCount, durationSum, durationCount int64
 	hist                                                                                                                                         map[string]map[int64]int64
 }
 
@@ -1333,6 +1334,8 @@ func (a *metricAccumulator) addFact(f channelMonitorV2Fact) {
 	a.output += f.Output
 	a.cacheCreation += f.CacheCreation
 	a.cacheRead += f.CacheRead
+	a.cacheSampleRead += f.CacheSampleRead
+	a.cacheSamplePrompt += f.CacheSamplePrompt
 	a.ttftSum += f.TTFTSum
 	a.ttftCount += f.TTFTCount
 	a.durationSum += f.DurationSum
@@ -1358,6 +1361,11 @@ func (a *metricAccumulator) metric(minutes float64, admin bool) service.ChannelM
 	}
 	if denom > 0 {
 		m.CacheRate = float64(a.cacheRead) / float64(denom)
+	}
+	// 冷启动口径：只统计至少命中过一次缓存的请求（衡量可复用场景下的复用率），
+	// 仅供渠道状态卡片展示；cache_rate 与健康分仍走上面的原始口径。
+	if a.cacheSamplePrompt > 0 {
+		m.CacheRateWarm = float64(a.cacheSampleRead) / float64(a.cacheSamplePrompt)
 	}
 	if admin {
 		affected, attempts := a.upstreamAffected, a.upstreamAttempts

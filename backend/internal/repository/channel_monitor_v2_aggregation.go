@@ -191,6 +191,7 @@ const channelMonitorV2UsageMetricsSQL = `
 INSERT INTO channel_monitor_v2_metrics_1m (
   bucket_start, platform, group_id, model, success_requests,
   input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
+  cache_sample_read_tokens, cache_sample_prompt_tokens,
   ttft_sum_ms, ttft_count, duration_sum_ms, duration_count, computed_at
 )
 SELECT date_trunc('minute', ul.created_at), %s, COALESCE(ul.group_id, 0), %s,
@@ -200,6 +201,8 @@ SELECT date_trunc('minute', ul.created_at), %s, COALESCE(ul.group_id, 0), %s,
        COALESCE(SUM(ul.output_tokens) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + `), 0),
        COALESCE(SUM(ul.cache_creation_tokens) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + `), 0),
        COALESCE(SUM(ul.cache_read_tokens) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + `), 0),
+       COALESCE(SUM(ul.cache_read_tokens) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + ` AND ul.cache_read_tokens > 0), 0),
+       COALESCE(SUM(ul.input_tokens + ul.cache_creation_tokens + ul.cache_read_tokens) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + ` AND ul.cache_read_tokens > 0), 0),
        COALESCE(SUM(ul.first_token_ms) FILTER (WHERE ul.first_token_ms IS NOT NULL AND ` + channelMonitorV2UsageSampleFilterUL + `), 0),
        COUNT(ul.first_token_ms) FILTER (WHERE ` + channelMonitorV2UsageSampleFilterUL + `),
        COALESCE(SUM(ul.duration_ms) FILTER (WHERE ul.duration_ms IS NOT NULL AND ` + channelMonitorV2UsageSampleFilterUL + `), 0),
@@ -461,7 +464,8 @@ const channelMonitorV2MetricsRollupSQL = `
 INSERT INTO channel_monitor_v2_metrics_rollup (
   bucket_start, bucket_seconds, platform, group_id, model, success_requests, error_requests,
   upstream_affected_requests, upstream_attempt_count, input_tokens, output_tokens,
-  cache_creation_tokens, cache_read_tokens, ttft_sum_ms, ttft_count, duration_sum_ms,
+  cache_creation_tokens, cache_read_tokens, cache_sample_read_tokens,
+  cache_sample_prompt_tokens, ttft_sum_ms, ttft_count, duration_sum_ms,
   duration_count, computed_at
 )
 ` + channelMonitorV2FixedRollupBoundsSQL + `
@@ -469,6 +473,7 @@ SELECT date_bin($1::interval, m.bucket_start, ` + channelMonitorV2DateBinOrigin 
        platform, group_id, model, SUM(success_requests), SUM(error_requests),
        SUM(upstream_affected_requests), SUM(upstream_attempt_count), SUM(input_tokens),
        SUM(output_tokens), SUM(cache_creation_tokens), SUM(cache_read_tokens),
+       SUM(cache_sample_read_tokens), SUM(cache_sample_prompt_tokens),
        SUM(ttft_sum_ms), SUM(ttft_count), SUM(duration_sum_ms), SUM(duration_count), NOW()
 FROM channel_monitor_v2_metrics_1m m, bounds
 WHERE m.bucket_start >= bounds.start_at AND m.bucket_start < bounds.end_at

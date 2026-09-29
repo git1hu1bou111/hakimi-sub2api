@@ -72,7 +72,12 @@ const latestBucket = computed(() => [...props.row.buckets]
 const latestMetrics = computed(() => latestBucket.value?.metrics ?? props.row.metrics)
 const latestHealth = computed(() => latestBucket.value?.health ?? props.row.health)
 // The cards show the newest completed monitoring bucket, not the selected-range aggregate.
-const cacheRate = computed(() => formatMonitorPercent(latestMetrics.value.cache_rate))
+// 缓存率展示优先用「排除冷启动」的复用率（cache_rate_warm，只统计至少命中过一次缓存的请求）；
+// 老数据没有该字段时回退到原始口径 cache_rate。健康分/趋势图仍用原始口径。
+const cacheRate = computed(() => {
+  const metrics = latestMetrics.value
+  return formatMonitorPercent(metrics.cache_rate_warm || metrics.cache_rate)
+})
 const availabilityPercent = computed(() => (1 - latestMetrics.value.error_rate) * 100)
 const successRate = computed(() => formatMonitorPercent(availabilityPercent.value / 100))
 const availabilityClass = computed(() => availabilityTextClass(availabilityPercent.value))
