@@ -189,15 +189,22 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 
 	if cmd.APIKeyQuotaCost > 0 {
 		exhausted, err := incrementUsageBillingAPIKeyQuota(ctx, tx, cmd.APIKeyID, cmd.APIKeyQuotaCost)
-		if err != nil {
+		switch {
+		case err == nil:
+			result.APIKeyQuotaExhausted = exhausted
+		case errors.Is(err, service.ErrAPIKeyNotFound):
+			warnAPIKeyDeletedBeforeBilling(cmd)
+		default:
 			return err
 		}
-		result.APIKeyQuotaExhausted = exhausted
 	}
 
 	if cmd.APIKeyRateLimitCost > 0 {
 		if err := incrementUsageBillingAPIKeyRateLimit(ctx, tx, cmd.APIKeyID, cmd.APIKeyRateLimitCost); err != nil {
-			return err
+			if !errors.Is(err, service.ErrAPIKeyNotFound) {
+				return err
+			}
+			warnAPIKeyDeletedBeforeBilling(cmd)
 		}
 	}
 
@@ -210,6 +217,16 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	return nil
+}
+
+// warnAPIKeyDeletedBeforeBilling 记录「补扣时 key 已被删除」这一情形。
+// 此时 key 上的配额/限速已无处累加（行已软删），但本次消费的扣费不能因此作废：
+// 若向上返回错误，整个后扣事务会连同余额扣减一起回滚，
+// 用户凭「建 key → 发请求 → 秒删 key」即可白嫖，故这里只记日志、不当作错误。
+func warnAPIKeyDeletedBeforeBilling(cmd *service.UsageBillingCommand) {
+	logger.LegacyPrintf("repository.usage_billing",
+		"[Billing] api key deleted before billing; skip key bookkeeping: key=%d user=%d request=%s cost=%.6f",
+		cmd.APIKeyID, cmd.UserID, cmd.RequestID, cmd.APIKeyQuotaCost+cmd.APIKeyRateLimitCost)
 }
 
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {

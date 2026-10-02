@@ -20,6 +20,8 @@ const (
 	captureBatchImageHoldSQL    = `(?s)UPDATE users\s+SET balance = balance\s+\+ CASE WHEN \$1 > \$2 THEN \$1 - \$2 ELSE 0 END\s+- CASE WHEN \$2 > \$1 THEN \$2 - \$1 ELSE 0 END,\s+frozen_balance = COALESCE\(frozen_balance, 0\) - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$3 AND deleted_at IS NULL AND COALESCE\(frozen_balance, 0\) >= \$1\s+RETURNING balance, frozen_balance`
 	releaseBatchImageHoldSQL    = `(?s)UPDATE users\s+SET balance = balance \+ \$1,\s+frozen_balance = COALESCE\(frozen_balance, 0\) - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$2 AND deleted_at IS NULL AND COALESCE\(frozen_balance, 0\) >= \$1\s+RETURNING balance, frozen_balance`
 	userExistsForBillingSQL     = `(?s)SELECT 1\s+FROM users\s+WHERE id = \$1 AND deleted_at IS NULL`
+	apiKeyQuotaIncrementSQL     = `(?s)UPDATE api_keys\s+SET quota_used = quota_used \+ \$1,.*WHERE id = \$2 AND deleted_at IS NULL\s+RETURNING quota > 0 AND quota_used >= quota AND quota_used - \$1 < quota`
+	apiKeyRateLimitIncrementSQL = `(?s)UPDATE api_keys SET\s+usage_5h = CASE.*WHERE id = \$2 AND deleted_at IS NULL`
 )
 
 func TestDeductUsageBillingBalance_UsesSufficientBalanceGuard(t *testing.T) {
@@ -256,6 +258,80 @@ func TestReleaseUsageBillingBatchImageBalance_SkipsWhenHoldNeverReserved(t *test
 	require.NoError(t, err)
 	require.Nil(t, result.NewBalance)
 	require.Nil(t, result.FrozenBalance)
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestApplyUsageBillingEffects_DeletedAPIKeyStillBillsBalance 覆盖「建 key→发请求→秒删 key」这一白嫖路径：
+// 后扣跑到时 key 已软删，配额/限速无处累加，但余额必须照扣、事务必须提交。
+func TestApplyUsageBillingEffects_DeletedAPIKeyStillBillsBalance(t *testing.T) {
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	mock.ExpectQuery(conditionalBalanceDeductSQL).
+		WithArgs(0.9, int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(1.1))
+	// key 已删：配额累加更新 0 行 → ErrAPIKeyNotFound
+	mock.ExpectQuery(apiKeyQuotaIncrementSQL).
+		WithArgs(0.9, int64(99), service.StatusAPIKeyActive, service.StatusAPIKeyQuotaExhausted).
+		WillReturnError(sql.ErrNoRows)
+	// key 已删：限速窗口累加同样更新 0 行 → ErrAPIKeyNotFound
+	mock.ExpectExec(apiKeyRateLimitIncrementSQL).
+		WithArgs(0.9, int64(99)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	result := &service.UsageBillingApplyResult{Applied: true}
+	err = (&usageBillingRepository{}).applyUsageBillingEffects(ctx, tx, &service.UsageBillingCommand{
+		RequestID:           "req-deleted-key",
+		UserID:              42,
+		APIKeyID:            99,
+		BalanceCost:         0.9,
+		APIKeyQuotaCost:     0.9,
+		APIKeyRateLimitCost: 0.9,
+	}, result)
+	require.NoError(t, err)
+	require.NotNil(t, result.NewBalance)
+	require.InDelta(t, 1.1, *result.NewBalance, 0.000001)
+	require.False(t, result.APIKeyQuotaExhausted)
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestApplyUsageBillingEffects_DeletedAPIKeyRateLimitOnly 同上，但只走限速分支（key 未设配额时）。
+func TestApplyUsageBillingEffects_DeletedAPIKeyRateLimitOnly(t *testing.T) {
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	mock.ExpectQuery(conditionalBalanceDeductSQL).
+		WithArgs(0.5, int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(9.5))
+	mock.ExpectExec(apiKeyRateLimitIncrementSQL).
+		WithArgs(0.5, int64(99)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	result := &service.UsageBillingApplyResult{Applied: true}
+	err = (&usageBillingRepository{}).applyUsageBillingEffects(ctx, tx, &service.UsageBillingCommand{
+		RequestID:           "req-deleted-key-rate-limit",
+		UserID:              42,
+		APIKeyID:            99,
+		BalanceCost:         0.5,
+		APIKeyRateLimitCost: 0.5,
+	}, result)
+	require.NoError(t, err)
+	require.NotNil(t, result.NewBalance)
+	require.InDelta(t, 9.5, *result.NewBalance, 0.000001)
 	require.NoError(t, tx.Commit())
 	require.NoError(t, mock.ExpectationsWereMet())
 }
