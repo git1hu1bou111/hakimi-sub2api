@@ -390,14 +390,19 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 
 // ConfirmNotification re-checks a successful callback against the upstream
 // order API before the order is fulfilled. QueryOrder already prefers the V2
-// signed endpoint and falls back to the legacy one.
+// signed endpoint and falls back to the legacy one. Gateways that do not
+// expose the EasyPay order-query API (bePusdt answers "404 page not found")
+// must not block fulfillment: an unavailable query is logged and the callback
+// is accepted, matching the fork's non-blocking upstreamVerifyMode=dry_run.
 func (e *EasyPay) ConfirmNotification(ctx context.Context, n *payment.PaymentNotification) error {
 	if n == nil || n.Status != payment.NotificationStatusSuccess {
 		return nil
 	}
 	result, err := e.QueryOrder(ctx, n.OrderID)
 	if err != nil {
-		return fmt.Errorf("easypay confirm: %w", err)
+		slog.Warn("easypay confirm: upstream order query unavailable, skip confirmation",
+			"order", n.OrderID, "error", err)
+		return nil
 	}
 	if result.Status != payment.ProviderStatusPaid {
 		return fmt.Errorf("easypay confirm: upstream reports order %s as not paid", n.OrderID)
