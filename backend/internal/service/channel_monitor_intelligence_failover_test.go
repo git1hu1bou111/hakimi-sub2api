@@ -48,7 +48,7 @@ func TestIntelligenceGroupFailoverPinnedGateway(t *testing.T) {
 	key := &APIKey{Key: "group-test-key", GroupID: &groupID, Group: &Group{ID: groupID, Platform: PlatformOpenAI}}
 	state := &intelligenceGroupSweep{}
 	point, complete := state.run(context.Background(), []Account{*a, *b}, time.Second, func(ctx context.Context, account *Account) IntelligencePoint {
-		result, _ := svc.probeAccountWithKeyOnce(ctx, account, key)
+		result, _ := svc.probeAccountWithKeyOnce(ctx, account, key, IntelligenceModel)
 		t.Logf("account=%d result=%+v upstream_calls=%d", account.ID, result, len(upstream.requests))
 		return result
 	})

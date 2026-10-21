@@ -4,7 +4,6 @@
       <template #filters>
         <div class="flex flex-wrap-reverse items-start justify-between gap-3">
           <AccountTableFilters
-            class="lg:w-auto lg:flex-1"
             v-model:searchQuery="params.search"
             :filters="params"
             :groups="groups"
@@ -309,8 +308,8 @@
           </template>
           <template #cell-intelligence="{ row }">
             <div v-if="intelligenceByAccount[row.id]?.length" class="flex flex-col gap-2">
-              <div v-for="view in intelligenceByAccount[row.id]" :key="view.group_id">
-                <div class="mb-1 max-w-[240px] truncate text-[10px] text-gray-500" :title="view.group_name">{{ view.group_name }}</div>
+              <div v-for="view in intelligenceByAccount[row.id]" :key="view.model">
+                <div class="mb-1 max-w-[240px] truncate text-[10px] text-gray-500" :title="view.model">{{ view.model }}</div>
                 <IntelligenceUptime :uptime="view.uptime" compact />
               </div>
             </div>

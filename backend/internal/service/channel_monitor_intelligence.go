@@ -39,6 +39,11 @@ const (
 	IntelligencePrompt      = "在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求）  形状 | 苹果味 | 桃子味 | 西瓜味 圆形 | 7 | 9 | 8 五角星形 | 7 | 6 | 4  不许联网，自己计算。只回答最少取出的糖果总数，使用一个整数，不要解释。"
 )
 
+// IntelligenceModels lists the models probed for each account. The account page
+// renders one row per model; an account that belongs to several groups is
+// probed once per model, not once per group.
+var IntelligenceModels = []string{IntelligenceModel, "gpt-6.1-sol"}
+
 type IntelligencePoint struct {
 	CheckedAt time.Time `json:"checked_at"`
 	Status    string    `json:"status"`
@@ -443,17 +448,17 @@ func classifyIntelligenceAnswer(raw []byte) IntelligencePoint {
 // plugin transport. This internal-only call pins the account without exposing a
 // client-controlled account selection header or charging an unrelated API key.
 func (s *ChannelMonitorIntelligence) probeAccountOnce(ctx context.Context, account *Account) (IntelligencePoint, time.Duration) {
-	return s.probeAccountWithKeyOnce(ctx, account, nil)
+	return s.probeAccountWithKeyOnce(ctx, account, nil, IntelligenceModel)
 }
 
-func (s *ChannelMonitorIntelligence) probeAccountWithKeyOnce(ctx context.Context, account *Account, key *APIKey) (IntelligencePoint, time.Duration) {
+func (s *ChannelMonitorIntelligence) probeAccountWithKeyOnce(ctx context.Context, account *Account, key *APIKey, model string) (IntelligencePoint, time.Duration) {
 	point := IntelligencePoint{Status: "red", Detail: "response_error"}
 	if s.accountTest == nil || s.accountTest.openaiGatewayService == nil {
 		point.Detail = "request_error"
 		return point, 0
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"model": IntelligenceModel, "input": IntelligencePrompt,
+		"model": model, "input": IntelligencePrompt,
 		"reasoning": map[string]string{"effort": "medium"},
 		"stream":    false, "store": false, "tools": []any{}, "tool_choice": "none",
 	})
@@ -500,13 +505,14 @@ func (s *ChannelMonitorIntelligence) tickAccounts() {
 		defer release()
 	}
 	// Oldest due account first. Limit one round to its actual concurrency budget
-	// so slow requests do not spill into the next cycle.
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id, array_agg(g.id ORDER BY g.id), MAX(h.checked_at) AS last_check
+	// so slow requests do not spill into the next cycle. Groups only decide which
+	// accounts participate; the probe itself runs once per account and model.
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, MAX(h.checked_at) AS last_check
 		FROM accounts a JOIN account_groups ag ON ag.account_id=a.id
 		JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL AND g.platform='openai'
 			AND g.status='active' AND g.account_intelligence_enabled=TRUE
 		LEFT JOIN LATERAL (SELECT MAX(checked_at) checked_at FROM channel_monitor_account_intelligence_history
-			WHERE account_id=a.id AND group_id=g.id) h ON TRUE
+			WHERE account_id=a.id) h ON TRUE
 		WHERE a.deleted_at IS NULL AND a.platform='openai' AND a.status='active'
 		GROUP BY a.id HAVING MAX(h.checked_at) IS NULL OR MAX(h.checked_at)<$1
 		ORDER BY MAX(h.checked_at) NULLS FIRST, a.id
@@ -516,14 +522,13 @@ func (s *ChannelMonitorIntelligence) tickAccounts() {
 		return
 	}
 	type target struct {
-		id     int64
-		groups []int64
+		id int64
 	}
 	var targets []target
 	for rows.Next() {
 		var target target
 		var last sql.NullTime
-		if err := rows.Scan(&target.id, pq.Array(&target.groups), &last); err != nil {
+		if err := rows.Scan(&target.id, &last); err != nil {
 			slog.Warn("account intelligence: scan failed", "error", err)
 			rows.Close()
 			return
@@ -545,24 +550,46 @@ func (s *ChannelMonitorIntelligence) tickAccounts() {
 			if err != nil || account == nil || account.Platform != PlatformOpenAI || !account.IsActive() {
 				return
 			}
-			point := intelligenceRetry(ctx, intelligenceRetryPolicy{attempts: IntelligenceMaxAttempts, timeout: IntelligenceTimeout,
-				budget: IntelligenceProbeBudget, backoff: time.Second}, func(attempt context.Context) (IntelligencePoint, time.Duration) {
-				return s.probeAccountOnce(attempt, account)
-			})
-			if s.ctx.Err() != nil {
+			// Probe every configured model once for this account. The account may
+			// belong to several groups; groups no longer multiply the probes.
+			type modelPoint struct {
+				model string
+				point IntelligencePoint
+			}
+			var mu sync.Mutex
+			results := make([]modelPoint, 0, len(IntelligenceModels))
+			var modelWG sync.WaitGroup
+			for _, model := range IntelligenceModels {
+				if !account.IsModelSupported(model) {
+					continue
+				}
+				modelWG.Add(1)
+				go func(model string) {
+					defer modelWG.Done()
+					point := intelligenceRetry(ctx, intelligenceRetryPolicy{attempts: IntelligenceMaxAttempts, timeout: IntelligenceTimeout,
+						budget: IntelligenceProbeBudget, backoff: time.Second}, func(attempt context.Context) (IntelligencePoint, time.Duration) {
+						return s.probeAccountWithKeyOnce(attempt, account, nil, model)
+					})
+					if s.ctx.Err() != nil {
+						return
+					}
+					mu.Lock()
+					results = append(results, modelPoint{model: model, point: point})
+					mu.Unlock()
+				}(model)
+			}
+			modelWG.Wait()
+			if len(results) == 0 {
 				return
 			}
 			saveCtx, done := context.WithTimeout(s.ctx, 5*time.Second)
 			defer done()
-			for _, groupID := range target.groups {
-				_, err := s.db.ExecContext(saveCtx, `INSERT INTO channel_monitor_account_intelligence_history(account_id,group_id,checked_at,status,latency_ms,detail)
-					SELECT $1,g.id,$3,$4,$5,$6 FROM groups g JOIN account_groups ag ON ag.group_id=g.id AND ag.account_id=$1
-					JOIN accounts a ON a.id=$1
-					WHERE g.id=$2 AND g.deleted_at IS NULL AND g.status='active' AND g.platform='openai' AND g.account_intelligence_enabled=TRUE
-						AND a.deleted_at IS NULL AND a.status='active' AND a.platform='openai'
-					ON CONFLICT DO NOTHING`, target.id, groupID, point.CheckedAt, point.Status, point.LatencyMs, point.Detail)
+			for _, result := range results {
+				_, err := s.db.ExecContext(saveCtx, `INSERT INTO channel_monitor_account_intelligence_history(account_id,model,checked_at,status,latency_ms,detail)
+					VALUES($1,$2,$3,$4,$5,$6)
+					ON CONFLICT DO NOTHING`, target.id, result.model, result.point.CheckedAt, result.point.Status, result.point.LatencyMs, result.point.Detail)
 				if err != nil {
-					slog.Warn("account intelligence: save failed", "account_id", target.id, "error", err)
+					slog.Warn("account intelligence: save failed", "account_id", target.id, "model", result.model, "error", err)
 				}
 			}
 		}(item)
@@ -573,54 +600,87 @@ func (s *ChannelMonitorIntelligence) tickAccounts() {
 
 type AccountIntelligenceView struct {
 	AccountID int64              `json:"account_id"`
-	GroupID   int64              `json:"group_id"`
-	GroupName string             `json:"group_name"`
+	Model     string             `json:"model"`
 	Uptime    IntelligenceUptime `json:"uptime"`
 }
 
 func (s *ChannelMonitorIntelligence) AccountHistory(ctx context.Context, ids []int64) ([]AccountIntelligenceView, error) {
 	end := time.Now().UTC().Truncate(IntelligenceInterval).Add(IntelligenceInterval)
 	start := end.Add(-IntelligenceSlots * IntelligenceInterval)
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id,g.id,g.name,h.checked_at,h.status,h.latency_ms
-		FROM accounts a JOIN account_groups ag ON ag.account_id=a.id
+	out := []AccountIntelligenceView{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// Only accounts that belong to an account-intelligence-enabled OpenAI group
+	// participate. Views are seeded for every model so the page renders one row
+	// per model even before a probe for that model has landed.
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT a.id FROM accounts a
+		JOIN account_groups ag ON ag.account_id=a.id
 		JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL AND g.platform='openai'
 			AND g.status='active' AND g.account_intelligence_enabled=TRUE
-		LEFT JOIN channel_monitor_account_intelligence_history h ON h.account_id=a.id AND h.group_id=g.id
-			AND h.checked_at>=$2 AND h.checked_at<$3
 		WHERE a.id=ANY($1) AND a.deleted_at IS NULL AND a.platform='openai' AND a.status='active'
-		ORDER BY a.id,g.id,h.checked_at`, pq.Array(ids), start, end)
+		ORDER BY a.id`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []AccountIntelligenceView{}
+	var accountIDs []int64
 	for rows.Next() {
-		var id, groupID int64
-		var name string
-		var checked sql.NullTime
-		var status sql.NullString
-		var latency sql.NullInt64
-		if err := rows.Scan(&id, &groupID, &name, &checked, &status, &latency); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		if len(out) == 0 || out[len(out)-1].AccountID != id || out[len(out)-1].GroupID != groupID {
-			out = append(out, AccountIntelligenceView{AccountID: id, GroupID: groupID, GroupName: name, Uptime: IntelligenceUptime{
-				Model: IntelligenceModel, ReasoningEffort: "medium", IntervalSeconds: 60, TimeoutSeconds: 30,
+		accountIDs = append(accountIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	index := make(map[[2]any]int, len(accountIDs)*len(IntelligenceModels))
+	for _, id := range accountIDs {
+		for _, model := range IntelligenceModels {
+			index[[2]any{id, model}] = len(out)
+			out = append(out, AccountIntelligenceView{AccountID: id, Model: model, Uptime: IntelligenceUptime{
+				Model: model, ReasoningEffort: "medium", IntervalSeconds: 60, TimeoutSeconds: 30,
 				RetryMaxAttempts: IntelligenceMaxAttempts, RetryBudgetSeconds: 55, Status: "unknown",
 				Points: []IntelligencePoint{}, WindowStart: start, BucketSeconds: 60, WindowPoints: IntelligenceSlots,
 			}})
 		}
-		if checked.Valid {
-			view := &out[len(out)-1].Uptime
-			point := IntelligencePoint{CheckedAt: checked.Time, Status: status.String, LatencyMs: int(latency.Int64)}
-			view.CheckedAt = &point.CheckedAt
-			view.Status = point.Status
-			if point.Status == "green" || point.Status == "yellow" {
-				view.Points = append(view.Points, point)
-			}
+	}
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+	history, err := s.db.QueryContext(ctx, `SELECT account_id, model, checked_at, status, latency_ms
+		FROM channel_monitor_account_intelligence_history
+		WHERE account_id=ANY($1) AND checked_at>=$2 AND checked_at<$3
+		ORDER BY account_id, model, checked_at`, pq.Array(accountIDs), start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer history.Close()
+	for history.Next() {
+		var accountID int64
+		var model string
+		var checked time.Time
+		var status string
+		var latency int64
+		if err := history.Scan(&accountID, &model, &checked, &status, &latency); err != nil {
+			return nil, err
+		}
+		idx, ok := index[[2]any{accountID, model}]
+		if !ok {
+			continue
+		}
+		view := &out[idx].Uptime
+		point := IntelligencePoint{CheckedAt: checked, Status: status, LatencyMs: int(latency)}
+		view.CheckedAt = &point.CheckedAt
+		view.Status = point.Status
+		if point.Status == "green" || point.Status == "yellow" {
+			view.Points = append(view.Points, point)
 		}
 	}
-	return out, rows.Err()
+	return out, history.Err()
 }
 
 // Attach uses only already-authorized matrix rows. No key, raw answer or

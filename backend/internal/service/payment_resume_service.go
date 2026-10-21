@@ -244,11 +244,22 @@ func CanonicalizeReturnURL(raw string, srcHost string, srcURL string) (string, e
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must use http or https")
 	}
+	// The return URL is handed to payment gateways verbatim: keep it to a
+	// plain hostname or IP literal and the canonical path, without userinfo.
+	if parsed.User != nil {
+		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must not contain user info")
+	}
+	if !isPlainReturnURLHost(parsed.Hostname()) {
+		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url host is invalid")
+	}
 	parsed.Fragment = ""
-	// 用户提交的 query 没有任何合法用途（前端提交的就是无 query 的 origin + /payment/result），
-	// 但它会被原样带进下单签名串：攻击者可借 return_url=...?trade_status=TRADE_SUCCESS
-	// 注入参数，复用下单签名伪造支付成功回调入账（issue #7881）。这里直接剥离，
-	// 回跳所需的 query 由 buildPaymentReturnURL 在服务端自行追加。
+	parsed.RawPath = ""
+	// Client-supplied query parameters are dropped: buildPaymentReturnURL adds
+	// its own signed set, and user-controlled pairs such as
+	// "trade_status=TRADE_SUCCESS" inside the signed return_url value can be
+	// smuggled into EasyPay-style sign base strings (values are concatenated
+	// unescaped), letting an order-creation signature be replayed as a forged
+	// payment-success callback. See issue #7881.
 	parsed.RawQuery = ""
 	if parsed.Path == "" {
 		parsed.Path = "/"
@@ -260,6 +271,25 @@ func CanonicalizeReturnURL(raw string, srcHost string, srcURL string) (string, e
 		return "", infraerrors.BadRequest("INVALID_RETURN_URL", "return_url must use the same host as the current site or browser origin")
 	}
 	return parsed.String(), nil
+}
+
+// isPlainReturnURLHost reports whether host is an IP literal or a hostname
+// made only of letters, digits, '.', '-' and '_'.
+func isPlainReturnURLHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	for _, c := range host {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func allowedReturnURLHost(returnURLHost string, requestHost string, refererURL string) bool {

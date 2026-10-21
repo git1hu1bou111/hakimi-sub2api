@@ -130,7 +130,7 @@ func (s *ChannelMonitorIntelligence) probeGroupAccounts(parent context.Context, 
 			}
 			defer slot.ReleaseFunc()
 		}
-		result, _ := s.probeAccountWithKeyOnce(attempt, fresh, key)
+		result, _ := s.probeAccountWithKeyOnce(attempt, fresh, key, IntelligenceModel)
 		slog.Info("intelligence group sweep: account result", "group_id", group.ID, "account_id", fresh.ID, "status", result.Status, "detail", result.Detail)
 		return result
 	})

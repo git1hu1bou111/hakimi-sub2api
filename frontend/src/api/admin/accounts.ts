@@ -7,8 +7,7 @@ import { apiClient } from '../client'
 import type { IntelligenceUptime } from '../channelMonitorV2'
 export interface AccountIntelligenceView {
   account_id: number
-  group_id: number
-  group_name: string
+  model: string
   uptime: IntelligenceUptime
 }
 export async function getIntelligenceHistory(accountIDs: number[]): Promise<AccountIntelligenceView[]> {

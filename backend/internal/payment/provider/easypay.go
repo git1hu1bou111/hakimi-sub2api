@@ -42,6 +42,7 @@ const (
 	maxEasypayResponseSize = 1 << 20 // 1MB
 	maxEasypayErrorSummary = 512
 	tradeStatusSuccess     = "TRADE_SUCCESS"
+	easypayAmountTolerance = 0.005
 	signTypeMD5            = "MD5"
 	signTypeRSA            = "RSA"
 	signTypeRSA2           = "RSA2"
@@ -385,6 +386,32 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 		return nil, fmt.Errorf("easypay query: v2 failed: %v; legacy failed: %w", v2Err, err)
 	}
 	return resp, err
+}
+
+// ConfirmNotification re-checks a successful callback against the upstream
+// order API before the order is fulfilled. QueryOrder already prefers the V2
+// signed endpoint and falls back to the legacy one.
+func (e *EasyPay) ConfirmNotification(ctx context.Context, n *payment.PaymentNotification) error {
+	if n == nil || n.Status != payment.NotificationStatusSuccess {
+		return nil
+	}
+	result, err := e.QueryOrder(ctx, n.OrderID)
+	if err != nil {
+		return fmt.Errorf("easypay confirm: %w", err)
+	}
+	if result.Status != payment.ProviderStatusPaid {
+		return fmt.Errorf("easypay confirm: upstream reports order %s as not paid", n.OrderID)
+	}
+	if math.Abs(result.Amount-n.Amount) > easypayAmountTolerance {
+		return fmt.Errorf("easypay confirm: amount mismatch: notified %v, upstream %v", n.Amount, result.Amount)
+	}
+	if result.TradeNo != "" {
+		if n.TradeNo != "" && n.TradeNo != result.TradeNo {
+			return fmt.Errorf("easypay confirm: trade_no mismatch: notified %s, upstream %s", n.TradeNo, result.TradeNo)
+		}
+		n.TradeNo = result.TradeNo
+	}
+	return nil
 }
 
 func (e *EasyPay) queryOrderLegacy(ctx context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
