@@ -54,6 +54,9 @@ func (s *RateLimitService) ObserveOpenAIAPIKeyHealthFailure(ctx context.Context,
 	if s == nil || s.openAIAPIKeyHealth == nil || s.settingService == nil || s.accountRepo == nil || !isOpenAIAPIKeyHealthBreakerAccount(account) {
 		return false
 	}
+	if account.IsNeverTempUnschedulable() {
+		return false
+	}
 	statusCode, responseBody, eligible := classifyOpenAIAPIKeyHealthFailure(upstreamErr)
 	if !eligible {
 		return false

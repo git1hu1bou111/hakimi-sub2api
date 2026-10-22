@@ -1540,6 +1540,30 @@
           </button>
         </div>
 
+        <div class="flex items-center justify-between rounded-lg border border-gray-200 p-3 dark:border-dark-600">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.tempUnschedulable.neverTitle') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.tempUnschedulable.neverHint') }}
+            </p>
+          </div>
+          <button
+            type="button"
+            @click="neverTempUnschedulable = !neverTempUnschedulable"
+            :class="[
+              'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+              neverTempUnschedulable ? 'bg-primary-600' : 'bg-gray-200 dark:bg-dark-600'
+            ]"
+          >
+            <span
+              :class="[
+                'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                neverTempUnschedulable ? 'translate-x-5' : 'translate-x-0'
+              ]"
+            />
+          </button>
+        </div>
+
         <div v-if="tempUnschedEnabled" class="space-y-3">
           <div class="rounded-lg bg-blue-50 p-3 dark:bg-blue-900/20">
             <p class="text-xs text-blue-700 dark:text-blue-400">
@@ -3795,6 +3819,7 @@ const antigravityWhitelistModels = ref<string[]>([])
 const antigravityModelMappings = ref<ModelMapping[]>([])
 const isSyncingAntigravityUpstream = ref(false)
 const tempUnschedEnabled = ref(false)
+const neverTempUnschedulable = ref(false)
 const accountSchedulingThresholdOverrideEnabled = ref(false)
 const accountSchedulingThresholdOverrideValue = ref(100)
 const ACCOUNT_SCHEDULING_THRESHOLD_CREDENTIAL_KEY = 'account_scheduling_threshold'
@@ -4952,6 +4977,12 @@ const buildTempUnschedRules = (rules: TempUnschedRuleForm[]) => {
 }
 
 const applyTempUnschedConfig = (credentials: Record<string, unknown>) => {
+  if (neverTempUnschedulable.value) {
+    credentials.never_temp_unschedulable = true
+  } else {
+    delete credentials.never_temp_unschedulable
+  }
+
   if (!tempUnschedEnabled.value) {
     delete credentials.temp_unschedulable_enabled
     delete credentials.temp_unschedulable_rules
@@ -5034,6 +5065,7 @@ const applyAccountSchedulingThresholdOverridePatch = (
 
 function loadTempUnschedRules(credentials?: Record<string, unknown>) {
   tempUnschedEnabled.value = credentials?.temp_unschedulable_enabled === true
+  neverTempUnschedulable.value = credentials?.never_temp_unschedulable === true
   const rawRules = credentials?.temp_unschedulable_rules
   if (!Array.isArray(rawRules)) {
     tempUnschedRules.value = []

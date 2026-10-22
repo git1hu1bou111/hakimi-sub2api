@@ -98,6 +98,15 @@ func tempUnscheduleAccountForTransportError(ctx context.Context, repo AccountRep
 	if account == nil || repo == nil {
 		return
 	}
+	if account.IsNeverTempUnschedulable() {
+		logger.L().With(zap.String("component", "service.gateway")).Info(
+			"gateway.account_temp_unschedule_skipped_by_flag",
+			zap.Int64("account_id", account.ID),
+			zap.String("account_name", account.Name),
+			zap.String("reason", safeErr),
+		)
+		return
+	}
 	until := time.Now().Add(gatewayTransportErrorTempUnschedDuration)
 	reason := "upstream transport error (proxy/network): " + safeErr
 

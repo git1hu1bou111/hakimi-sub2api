@@ -148,6 +148,9 @@ func (s *RateLimitService) notifyAccountSchedulingBlocked(account *Account, unti
 	if s == nil || s.runtimeBlocker == nil || account == nil {
 		return
 	}
+	if account.IsNeverTempUnschedulable() {
+		return
+	}
 	s.runtimeBlocker.BlockAccountScheduling(account, until, reason)
 }
 
@@ -167,6 +170,9 @@ func (s *RateLimitService) ApplyAccountSchedulingThreshold(ctx context.Context, 
 		return false
 	}
 	if account.Platform == PlatformGrok {
+		return false
+	}
+	if account.IsNeverTempUnschedulable() {
 		return false
 	}
 	if !account.IsActive() || !account.Schedulable {
@@ -2716,6 +2722,9 @@ func (s *RateLimitService) tryTempUnschedulable(ctx context.Context, account *Ac
 	if account == nil || account.Platform == PlatformGrok {
 		return false
 	}
+	if account.IsNeverTempUnschedulable() {
+		return false
+	}
 	if !account.IsTempUnschedulableEnabled() {
 		return false
 	}
@@ -2920,6 +2929,9 @@ func (s *RateLimitService) HandleStreamTimeout(ctx context.Context, account *Acc
 
 // triggerStreamTimeoutTempUnsched 触发流超时临时不可调度
 func (s *RateLimitService) triggerStreamTimeoutTempUnsched(ctx context.Context, account *Account, settings *StreamTimeoutSettings, model string) bool {
+	if account == nil || account.IsNeverTempUnschedulable() {
+		return false
+	}
 	now := time.Now()
 	until := now.Add(time.Duration(settings.TempUnschedMinutes) * time.Minute)
 

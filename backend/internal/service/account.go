@@ -1180,6 +1180,20 @@ func (a *Account) IsCustomErrorCodesEnabled() bool {
 	return false
 }
 
+// IsNeverTempUnschedulable 检查账号是否永不进入临时不可调度。
+// 开启后所有自动摘号路径（传输错误、重试耗尽、阈值、自定义规则、健康熔断）都会跳过。
+func (a *Account) IsNeverTempUnschedulable() bool {
+	if a == nil || a.Credentials == nil {
+		return false
+	}
+	v, ok := a.Credentials["never_temp_unschedulable"]
+	if !ok || v == nil {
+		return false
+	}
+	enabled, ok := v.(bool)
+	return ok && enabled
+}
+
 // IsPoolMode 检查 API Key 账号是否启用池模式。
 // 池模式下，上游错误不标记本地账号状态，而是在同一账号上重试。
 func (a *Account) IsPoolMode() bool {

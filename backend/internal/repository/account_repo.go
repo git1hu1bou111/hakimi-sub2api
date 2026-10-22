@@ -2487,6 +2487,7 @@ func (r *accountRepository) SetTempUnschedulable(ctx context.Context, id int64, 
 		WHERE id = $3
 			AND deleted_at IS NULL
 			AND (temp_unschedulable_until IS NULL OR temp_unschedulable_until < $1)
+			AND NOT (COALESCE(credentials, '{}'::jsonb) @> '{"never_temp_unschedulable": true}'::jsonb)
 	`, until, reason, id)
 	if err != nil {
 		return err
