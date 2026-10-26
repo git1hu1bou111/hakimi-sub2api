@@ -24,10 +24,11 @@ import (
 const (
 	IntelligenceModel    = "gpt-6-astra"
 	IntelligenceInterval = 60 * time.Second
-	IntelligenceTimeout  = 30 * time.Second
-	// Retries share one budget shorter than a minute, including backoff. A slow
-	// attempt must not push the next natural-minute probe into a later minute.
-	IntelligenceProbeBudget = 55 * time.Second
+	IntelligenceTimeout  = 90 * time.Second
+	// Retries share one budget. A single attempt may take up to 90s because slow
+	// upstreams (e.g. gpt-6-astra) often need 30-60s; the budget also leaves room
+	// for fast-failure retries. A slow probe may skip the next minute's slot.
+	IntelligenceProbeBudget = 95 * time.Second
 	IntelligenceMaxAttempts = 3
 	IntelligenceSlots       = 60
 	// A single round cannot promise one-minute coverage beyond this capacity.
@@ -642,8 +643,8 @@ func (s *ChannelMonitorIntelligence) AccountHistory(ctx context.Context, ids []i
 		for _, model := range IntelligenceModels {
 			index[[2]any{id, model}] = len(out)
 			out = append(out, AccountIntelligenceView{AccountID: id, Model: model, Uptime: IntelligenceUptime{
-				Model: model, ReasoningEffort: "medium", IntervalSeconds: 60, TimeoutSeconds: 30,
-				RetryMaxAttempts: IntelligenceMaxAttempts, RetryBudgetSeconds: 55, Status: "unknown",
+				Model: model, ReasoningEffort: "medium", IntervalSeconds: 60, TimeoutSeconds: 90,
+				RetryMaxAttempts: IntelligenceMaxAttempts, RetryBudgetSeconds: 95, Status: "unknown",
 				Points: []IntelligencePoint{}, WindowStart: start, BucketSeconds: 60, WindowPoints: IntelligenceSlots,
 			}})
 		}

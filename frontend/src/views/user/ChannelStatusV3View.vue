@@ -101,10 +101,17 @@ let countdownTimer: number | null = null
 
 // platform_group is intentionally used here: the backend scopes it to the
 // monitor group_ids selected by the operator, so unrelated groups never appear.
+// Sort group cards by the rate the user actually sees (custom rate > group
+// default), so a lower-multiplier group always appears before a higher one.
+function groupRateForSort(groupId?: number) {
+  if (!groupId) return Number.POSITIVE_INFINITY
+  const value = userGroupRates.value[groupId]
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.POSITIVE_INFINITY
+}
 const rows = computed(() => [...(matrix.value?.items ?? [])]
   .filter(row => row.group_id != null && row.group_id > 0)
-  .sort((a, b) => (a.group_id ?? 0) - (b.group_id ?? 0)))
-const platformOrder = ['openai', 'anthropic', 'grok', 'gemini']
+  .sort((a, b) => groupRateForSort(a.group_id) - groupRateForSort(b.group_id) || (a.group_id ?? 0) - (b.group_id ?? 0)))
+const platformOrder = ['openai', 'anthropic', 'grok', 'gemini', 'deepseek', 'kimi', 'zhipu']
 const platformSections = computed(() => {
   const groups = new Map<string, MonitorMatrixRow[]>()
   for (const row of rows.value) {
