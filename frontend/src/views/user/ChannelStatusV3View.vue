@@ -37,15 +37,35 @@
           class="space-y-4"
         >
           <h2 :id="`monitor-platform-${index}`" class="flex items-center gap-2.5 text-sm font-semibold text-gray-800 dark:text-gray-100">
-            <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full" :class="providerGradient(section.platform)" aria-hidden="true">
-              <ProviderIcon :provider="section.platform" :size="16" />
-            </span>
-            <span>{{ providerLabel(section.platform) }}</span>
+            <template v-if="section.platform === domesticSectionKey">
+              <span class="flex shrink-0 -space-x-2" aria-hidden="true">
+                <span
+                  v-for="platform in domesticPlatforms"
+                  :key="platform"
+                  class="grid h-7 w-7 place-items-center rounded-full ring-2 ring-white dark:ring-dark-800"
+                  :class="providerGradient(platform)"
+                >
+                  <ProviderIcon :provider="platform" :size="14" />
+                </span>
+              </span>
+              <span>{{ domesticSectionLabel }}</span>
+            </template>
+            <template v-else>
+              <span class="grid h-7 w-7 shrink-0 place-items-center rounded-full" :class="providerGradient(section.platform)" aria-hidden="true">
+                <ProviderIcon :provider="section.platform" :size="16" />
+              </span>
+              <span>{{ providerLabel(section.platform) }}</span>
+            </template>
             <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium tabular-nums text-gray-500 dark:bg-dark-700 dark:text-gray-400" :aria-label="t('channelMonitorV3.groupCount', { count: section.rows.length })">
               {{ section.rows.length }}
             </span>
           </h2>
-          <div class="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <div
+            class="grid gap-5"
+            :class="section.platform === domesticSectionKey
+              ? 'grid-cols-1 md:grid-cols-3'
+              : 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'"
+          >
             <ChannelMonitorV3Card
               v-for="row in section.rows"
               :key="row.group_id"
@@ -111,17 +131,25 @@ function groupRateForSort(groupId?: number) {
 const rows = computed(() => [...(matrix.value?.items ?? [])]
   .filter(row => row.group_id != null && row.group_id > 0)
   .sort((a, b) => groupRateForSort(a.group_id) - groupRateForSort(b.group_id) || (a.group_id ?? 0) - (b.group_id ?? 0)))
-const platformOrder = ['openai', 'anthropic', 'grok', 'gemini', 'deepseek', 'kimi', 'zhipu']
+const domesticPlatforms = ['deepseek', 'kimi', 'zhipu'] as const
+const domesticPlatformSet = new Set<string>(domesticPlatforms)
+const domesticSectionKey = 'domestic-models'
+const domesticSectionLabel = 'DeepSeek · Kimi · GLM'
+const platformOrder = ['openai', 'anthropic', 'grok', 'gemini']
 const platformSections = computed(() => {
   const groups = new Map<string, MonitorMatrixRow[]>()
   for (const row of rows.value) {
-    const group = groups.get(row.platform)
+    // DeepSeek/Kimi/GLM are separate backend platforms, but they share one
+    // user-facing section so the three cards can sit in the same grid.
+    const key = domesticPlatformSet.has(row.platform) ? domesticSectionKey : row.platform
+    const group = groups.get(key)
     if (group) group.push(row)
-    else groups.set(row.platform, [row])
+    else groups.set(key, [row])
   }
   const rank = (platform: string) => {
+    if (platform === domesticSectionKey) return platformOrder.length
     const index = platformOrder.indexOf(platform)
-    return index < 0 ? platformOrder.length : index
+    return index < 0 ? platformOrder.length + 1 : index
   }
   // Preserve every returned platform, including ones added by future providers.
   return [...groups].map(([platform, rows]) => ({ platform, rows }))
