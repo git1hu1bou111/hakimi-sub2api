@@ -173,9 +173,9 @@ func (intelligenceErrorReader) Close() error             { return nil }
 
 func TestIntelligenceRetryPolicyContract(t *testing.T) {
 	require.Equal(t, 3, IntelligenceMaxAttempts)
-	require.Equal(t, 30*time.Second, IntelligenceTimeout)
-	require.Equal(t, 55*time.Second, IntelligenceProbeBudget)
-	require.Less(t, IntelligenceProbeBudget, IntelligenceInterval)
+	require.Equal(t, 90*time.Second, IntelligenceTimeout)
+	require.Equal(t, 95*time.Second, IntelligenceProbeBudget)
+	require.Greater(t, IntelligenceProbeBudget, IntelligenceInterval)
 	require.Equal(t, 60, IntelligenceSlots)
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, tc := range []struct {

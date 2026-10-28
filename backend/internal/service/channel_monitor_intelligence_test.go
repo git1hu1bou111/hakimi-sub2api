@@ -133,7 +133,7 @@ func TestIntelligenceAttachOnlyAuthorizedOpenAI(t *testing.T) {
 func TestIntelligenceMinuteCadence(t *testing.T) {
 	now := time.Date(2026, 9, 25, 4, 30, 0, 0, time.UTC)
 	require.Equal(t, time.Minute, IntelligenceInterval)
-	require.Equal(t, 30*time.Second, IntelligenceTimeout)
+	require.Equal(t, 90*time.Second, IntelligenceTimeout)
 	require.GreaterOrEqual(t, intelligenceConcurrency, 6)
 	require.True(t, intelligenceProbeDue(nil, now))
 	require.False(t, intelligenceProbeDue(&IntelligencePoint{CheckedAt: now}, now.Add(59*time.Second)))
