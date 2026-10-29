@@ -27,23 +27,44 @@ type GrokSafetyReviewMark struct {
 }
 
 const grokSafetyReviewMarkKey = "ops_grok_safety_review"
+const grokViolationFeeCodePrefix = "violation_fee.grok."
+const grokSafetyCheckMarker = "SAFETY_CHECK_TYPE"
 
-// IsGrokSafetyReviewRejection matches only the documented structured code.
-// A bare 403 / invalid_request_error / message is intentionally not enough.
-func IsGrokSafetyReviewRejection(_ int, body []byte) bool {
+// IsGrokSafetyReviewRejection matches a structured safety code, or the
+// documented SAFETY_CHECK_TYPE marker carried by a 403/stream error. A bare
+// 403 / invalid_request_error / generic apology is intentionally not enough.
+func IsGrokSafetyReviewRejection(statusCode int, body []byte) bool {
 	if len(body) == 0 {
 		return false
 	}
-	return grokSafetyReviewCodeFromPayload(body) != ""
+	if grokSafetyReviewCodeFromPayload(body) != "" {
+		return true
+	}
+	if statusCode != http.StatusForbidden && statusCode != http.StatusOK {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(string(body)), grokSafetyCheckMarker)
 }
 
 func grokSafetyReviewCodeFromPayload(body []byte) string {
-	for _, path := range []string{"error.code", "response.error.code"} {
-		if code := strings.TrimSpace(gjson.GetBytes(body, path).String()); strings.EqualFold(code, grokSafetyReviewRejectedCode) {
-			return grokSafetyReviewRejectedCode
+	for _, path := range []string{
+		"error.code",
+		"response.error.code",
+		"error_code",
+		"error_type",
+	} {
+		code := strings.TrimSpace(gjson.GetBytes(body, path).String())
+		if isGrokSafetyReviewCode(code) {
+			return code
 		}
 	}
 	return ""
+}
+
+func isGrokSafetyReviewCode(code string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(code))
+	return normalized == grokSafetyReviewRejectedCode ||
+		strings.HasPrefix(normalized, grokViolationFeeCodePrefix)
 }
 
 // MarkGrokSafetyReview stores the first confirmed rejection for this request.

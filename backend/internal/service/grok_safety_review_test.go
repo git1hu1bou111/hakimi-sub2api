@@ -28,6 +28,21 @@ func TestIsGrokSafetyReviewRejection(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "91 top-level violation fee code",
+			body: `{"status_code":403,"error_code":"violation_fee.grok.csam","error_type":"openai_error"}`,
+			want: true,
+		},
+		{
+			name: "91 violation fee code with marker",
+			body: `{"error":{"code":"violation_fee.grok.csam","message":"I'm sorry, I can't help with that request. Failed check: SAFETY_CHECK_TYPE"}}`,
+			want: true,
+		},
+		{
+			name: "91 marker-only 403",
+			body: `{"error":{"type":"invalid_request_error","message":"I'm sorry, I can't help with that request. Failed check: SAFETY_CHECK_TYPE"}}`,
+			want: true,
+		},
+		{
 			name: "bare forbidden is not enough",
 			body: `{"error":{"type":"invalid_request_error","message":"I'm sorry, I can't help with that request."}}`,
 			want: false,

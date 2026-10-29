@@ -94,7 +94,11 @@ func normalizeGrokErrorMarker(value string) string {
 }
 
 func isGrokContentPolicyCode(value string) bool {
-	switch normalizeGrokErrorMarker(value) {
+	normalized := normalizeGrokErrorMarker(value)
+	if strings.HasPrefix(normalized, grokViolationFeeCodePrefix) {
+		return true
+	}
+	switch normalized {
 	case "content_filter",
 		"content_policy",
 		"content_policy_violation",
@@ -176,6 +180,7 @@ func grokContentPolicyMessage(value string) bool {
 		"input violates content policy",
 		"input violates policy",
 		"violates usage guidelines",
+		"failed check: safety_check_type",
 	} {
 		if strings.Contains(lower, phrase) {
 			return true
@@ -199,7 +204,7 @@ func grokContentPolicyClientMessage(responseBody []byte) string {
 // Free-usage / empty-output / billing bodies also failover even when the HTTP
 // status alone would not (e.g. 400 with free-usage-exhausted).
 func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, responseBody []byte) bool {
-	if isGrokContentPolicyRejection(statusCode, responseBody) {
+	if isGrokContentPolicyRejection(statusCode, responseBody) || IsGrokSafetyReviewRejection(statusCode, responseBody) {
 		return false
 	}
 	// A 422 emitted by xAI's ModelInput decoder is account/runtime compatibility,
