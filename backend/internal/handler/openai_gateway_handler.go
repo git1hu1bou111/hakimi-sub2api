@@ -802,6 +802,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			cyberBlockBodyHTTP = sessionHashBody
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordGrokSafetyFeeIfMarked(c, apiKey, account, subscription, reqModel, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1395,6 +1396,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			cyberBlockBodyMsg = body
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordGrokSafetyFeeIfMarked(c, apiKey, account, subscription, reqModel, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -3119,6 +3121,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
 				cyberMarked := service.GetOpsCyberPolicy(c) != nil
 				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockBody, turnUsageFields, requestPayloadHash)
+				h.recordGrokSafetyFeeIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnUsageFields, requestPayloadHash)
 				cyberBlockedThisConn, cyberBlockPendingAfterFailover = advanceOpenAIWSCyberBlockState(
 					cyberBlockedThisConn,
 					cyberBlockPendingAfterFailover,
@@ -4087,6 +4090,7 @@ func writeCyberSessionBlockedWSError(ctx context.Context, conn *coderws.Conn) {
 // cyberPolicyRecordedKey guards against double-firing recordCyberPolicyIfMarked
 // within one request (e.g. in a retry/failover loop).
 const cyberPolicyRecordedKey = "ops_cyber_recorded"
+const grokSafetyFeeRecordedKey = "ops_grok_safety_fee_recorded"
 
 // cyberPolicyOpsErrorMeta carries request-scoped fields captured outside the
 // async goroutine for building the cyber ops_error_logs entry.
@@ -4477,6 +4481,78 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 	}()
 }
 
+// recordGrokSafetyFeeIfMarked charges the configured per-group fixed fee once
+// for a confirmed Grok safety_review_rejected call. It is independent of token
+// pricing and ignores generic 403s because the service mark only exists for the
+// exact documented error code.
+func (h *OpenAIGatewayHandler) recordGrokSafetyFeeIfMarked(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	account *service.Account,
+	subscription *service.UserSubscription,
+	model string,
+	channelFields service.ChannelUsageFields,
+	requestPayloadHash string,
+) {
+	mark := service.GetGrokSafetyReviewMark(c)
+	if mark == nil || apiKey == nil || apiKey.Group == nil || account == nil {
+		return
+	}
+	fee := apiKey.Group.GrokSafetyRejectionFee
+	if fee == nil || *fee <= 0 || c.GetBool(grokSafetyFeeRecordedKey) {
+		return
+	}
+	c.Set(grokSafetyFeeRecordedKey, true)
+
+	requestID := mark.AttemptID
+	if requestID == "" {
+		requestID = c.Writer.Header().Get("X-Request-ID")
+	}
+	if requestID == "" {
+		return
+	}
+	if model == "" {
+		model = mark.Model
+	}
+	stream := mark.HTTPStatus == http.StatusOK
+	if v, ok := c.Get(opsStreamKey); ok {
+		if b, ok := v.(bool); ok {
+			stream = b
+		}
+	}
+	inboundEndpoint := GetInboundEndpoint(c)
+	upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, nil)
+	userAgent := c.GetHeader("User-Agent")
+	clientIP := strings.TrimSpace(ip.GetClientIP(c))
+	sessionID := service.ExtractClientSessionID(c)
+	apiKeySvc := h.apiKeyService
+	gwSvc := h.gatewayService
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if gwSvc != nil {
+			gwSvc.RecordGrokSafetyRejectionUsage(ctx, service.CyberPolicyUsageInput{
+				APIKey:             apiKey,
+				Account:            account,
+				Subscription:       subscription,
+				RequestID:          requestID,
+				Model:              model,
+				Stream:             stream,
+				InboundEndpoint:    inboundEndpoint,
+				UpstreamEndpoint:   upstreamEndpoint,
+				UserAgent:          userAgent,
+				IPAddress:          clientIP,
+				SessionID:          sessionID,
+				RequestPayloadHash: requestPayloadHash,
+				APIKeyService:      apiKeySvc,
+				ChannelUsageFields: channelFields,
+				GrokSafetyRejected: true,
+				FixedFeeUSD:        *fee,
+			})
+		}
+	}()
+}
+
 // clearCyberPolicyTurnState resets the cyber mark and recorded guard after a
 // logical WS turn has finished.
 func clearCyberPolicyTurnState(c *gin.Context) {
@@ -4490,6 +4566,8 @@ func clearCyberPolicyAttemptState(c *gin.Context, resetRecorded bool) {
 	service.ClearOpsCyberPolicy(c)
 	if resetRecorded {
 		c.Set(cyberPolicyRecordedKey, false)
+		service.ClearGrokSafetyReviewMark(c)
+		c.Set(grokSafetyFeeRecordedKey, false)
 	}
 }
 

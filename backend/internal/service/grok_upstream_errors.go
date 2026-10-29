@@ -100,7 +100,8 @@ func isGrokContentPolicyCode(value string) bool {
 		"content_policy_violation",
 		"content_moderation",
 		"cyber_policy",
-		"new_sensitive":
+		"new_sensitive",
+		grokSafetyReviewRejectedCode:
 		return true
 	default:
 		return false

@@ -40,6 +40,10 @@ type OpenAIRecordUsageInput struct {
 	PricingAt time.Time
 	// CyberBlocked 为 true 时把该用量行标记为 cyber（request_type=cyber），计费逻辑不变。
 	CyberBlocked bool
+	// GrokSafetyRejected marks a confirmed Grok safety_review_rejected call.
+	// FixedFeeUSD, when > 0, replaces token cost with the group's fixed fee.
+	GrokSafetyRejected bool
+	FixedFeeUSD        float64
 	// NativeCompactionV2 is an orthogonal semantic flag captured by the
 	// Responses handler from stream=true + compaction_trigger. It never stores
 	// the request payload and does not replace the transport request type.
@@ -69,6 +73,9 @@ type CyberPolicyUsageInput struct {
 	RequestPayloadHash string
 	APIKeyService      APIKeyQuotaUpdater
 	NativeCompactionV2 bool
+	// GrokSafetyRejected/FixedFeeUSD record a fixed Grok safety-review fee row.
+	GrokSafetyRejected bool
+	FixedFeeUSD        float64
 	ChannelUsageFields
 }
 
@@ -105,11 +112,27 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		RequestPayloadHash: in.RequestPayloadHash,
 		APIKeyService:      in.APIKeyService,
 		ChannelUsageFields: in.ChannelUsageFields,
-		CyberBlocked:       true,
+		CyberBlocked:       !in.GrokSafetyRejected,
+		GrokSafetyRejected: in.GrokSafetyRejected,
+		FixedFeeUSD:        in.FixedFeeUSD,
 		NativeCompactionV2: in.NativeCompactionV2,
 	}); err != nil {
 		logger.LegacyPrintf("service.openai_gateway", "cyber usage record failed: request_id=%s err=%v", in.RequestID, err)
 	}
+}
+
+// RecordGrokSafetyRejectionUsage records one fixed-fee usage row for a confirmed
+// Grok safety rejection. Token usage is intentionally zero; the fixed fee is
+// independent of the group's text multiplier.
+func (s *OpenAIGatewayService) RecordGrokSafetyRejectionUsage(ctx context.Context, in CyberPolicyUsageInput) {
+	if s == nil || in.APIKey == nil || in.APIKey.User == nil || in.Account == nil {
+		return
+	}
+	in.GrokSafetyRejected = true
+	if in.Model == "" {
+		in.Model = "grok-safety-review"
+	}
+	s.RecordCyberPolicyUsageLog(ctx, in)
 }
 
 // ResolveUserGroupRateMultiplier resolves the same cached multiplier used by OpenAI usage billing.
@@ -254,7 +277,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		pricingAt,
 	)
 	if err != nil {
-		if !isUsagePricingUnavailableError(err) {
+		if !isUsagePricingUnavailableError(err) && input.FixedFeeUSD <= 0 {
 			return err
 		}
 		logger.L().With(
@@ -328,6 +351,18 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 
+	// A confirmed Grok safety rejection is a fixed fee, independent of token
+	// rates. The fee replaces token pricing for this row; account quota is not
+	// charged because account stats cost is derived from zero tokens.
+	if input.FixedFeeUSD > 0 {
+		fee := QuantizeUsageBillingAmount(input.FixedFeeUSD)
+		cost = &CostBreakdown{
+			BillingMode: string(BillingModeToken),
+			ActualCost:  fee,
+			TotalCost:   fee,
+		}
+	}
+
 	// Determine billing type
 	isSubscriptionBilling := subscription != nil && apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 	billingType := BillingTypeBalance
@@ -338,6 +373,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// Create usage log
 	durationMs := int(result.Duration.Milliseconds())
 	accountRateMultiplier := account.BillingRateMultiplier()
+	if input.FixedFeeUSD > 0 {
+		// Fixed rejection fees are not subject to text/upstream multipliers and
+		// must not consume the upstream account's quota.
+		accountRateMultiplier = 0
+	}
 	requestID := resolveUsageBillingRequestID(ctx, result.RequestID)
 	if result.OpenAIWSMode {
 		if upstreamRequestID := strings.TrimSpace(result.RequestID); upstreamRequestID != "" {
@@ -441,6 +481,8 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.Stream = result.Stream
 	if input.CyberBlocked {
 		usageLog.RequestType = RequestTypeCyberBlocked
+	} else if input.GrokSafetyRejected {
+		usageLog.RequestType = RequestTypeGrokSafetyRejected
 	}
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs

@@ -840,14 +840,17 @@ func (s *OpenAIGatewayService) proxyOpenAIWSHTTPBridgeTurn(
 				}
 			}
 			requestScopedCapacity := isOpenAIUpstreamCapacityShedEvent(upstreamMessage)
-			if account.Platform == PlatformGrok && eventType == "error" {
+			if account.Platform == PlatformGrok && (eventType == "error" || eventType == "response.failed") {
 				// SSE error events do not carry an HTTP status. The local status
 				// mapper therefore defaults unknown xAI codes (for example
 				// new_sensitive) to 502; classify the body as a request-scoped
 				// 403 before applying status-based failover or account state.
-				if isGrokContentPolicyRejection(http.StatusForbidden, upstreamMessage) {
+				safetyRejected := markGrokSafetyReviewFromUpstream(
+					c, resp.Header.Get("x-request-id"), mappedModel, http.StatusOK, upstreamMessage,
+				)
+				if safetyRejected || isGrokContentPolicyRejection(http.StatusForbidden, upstreamMessage) {
 					shouldFailover = false
-				} else {
+				} else if eventType == "error" {
 					shouldFailover = s.shouldFailoverGrokUpstreamError(statusCode, upstreamMessage)
 					s.handleGrokAccountUpstreamError(ctx, account, statusCode, resp.Header, upstreamMessage)
 				}

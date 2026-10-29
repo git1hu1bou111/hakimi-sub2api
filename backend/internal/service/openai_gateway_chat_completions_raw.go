@@ -431,6 +431,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		refusalDetector.ObserveSSELine(line)
 		if payload, ok := extractOpenAISSEDataLine(line); ok {
 			trimmedPayload := strings.TrimSpace(payload)
+			if account.Platform == PlatformGrok && IsGrokSafetyReviewRejection(http.StatusOK, []byte(payload)) {
+				markGrokSafetyReviewFromUpstream(c, requestID, upstreamModel, http.StatusOK, []byte(payload))
+			}
 			terminal.ObserveDataLine(trimmedPayload)
 			if trimmedPayload != "[DONE]" {
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
@@ -542,6 +545,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
+	if mark := GetGrokSafetyReviewMark(c); mark != nil {
+		return resultWithUsage(), fmt.Errorf("upstream response failed: grok safety review rejected (%s)", mark.ErrorCode)
+	}
 	return resultWithUsage(), nil
 }
 

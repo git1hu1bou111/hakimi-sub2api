@@ -966,9 +966,16 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				}
 				return true
 			}
-			shouldFailover := openAIStreamFailedEventShouldFailover(payloadBytes, message)
-			if strings.TrimSpace(event.Type) == "error" {
-				shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
+			grokSafetyHit := false
+			if account != nil && account.Platform == PlatformGrok {
+				grokSafetyHit = markGrokSafetyReviewFromUpstream(c, requestID, upstreamModel, http.StatusOK, payloadBytes)
+			}
+			shouldFailover := false
+			if !grokSafetyHit {
+				shouldFailover = openAIStreamFailedEventShouldFailover(payloadBytes, message)
+				if strings.TrimSpace(event.Type) == "error" {
+					shouldFailover = openAIStreamErrorEventShouldFailover(payloadBytes, message)
+				}
 			}
 			if !clientOutputStarted && shouldFailover {
 				streamFailoverErr = s.newOpenAIStreamFailoverErrorWithModel(c, account, false, requestID, payloadBytes, message, upstreamModel, resp.Header)

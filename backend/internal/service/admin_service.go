@@ -272,6 +272,8 @@ type CreateGroupInput struct {
 	WebSearchPricePerCall *float64
 	// 搜索工具单价 per 1k
 	SearchPricePer1k *float64
+	// Grok safety_review_rejected 固定费（USD/次）；nil/0 表示不收费。
+	GrokSafetyRejectionFee *float64
 	// Grok Voice 显式定价（分组级）
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64
@@ -356,6 +358,8 @@ type UpdateGroupInput struct {
 	WebSearchPricePerCall *float64
 	// 搜索工具单价；nil 不修改，负数清除
 	SearchPricePer1k *float64
+	// Grok safety_review_rejected 固定费（USD/次）；nil 不修改，负数/0 清除。
+	GrokSafetyRejectionFee *float64
 	// Grok Voice 显式定价；nil 表示不修改，负数表示清除
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64

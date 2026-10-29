@@ -67,6 +67,8 @@ type Group struct {
 
 	// 搜索工具显式定价（per 1k calls）。
 	SearchPricePer1k *float64
+	// Grok safety_review_rejected 固定费（USD/次，独立于文本倍率）；nil/0 表示不收费。
+	GrokSafetyRejectionFee *float64
 	// Grok Voice 显式定价（分组级，不按文本 RateMultiplier）。
 	AudioRealtimePricePerMin     *float64
 	AudioTTSPricePerMillionChars *float64

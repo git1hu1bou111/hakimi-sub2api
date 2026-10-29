@@ -175,6 +175,13 @@ func (Group) Fields() []ent.Field {
 			Min(0).
 			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}).
 			Comment("搜索工具价格 per 1000 calls（web_search 等）"),
+		// Grok 安全拒绝固定费（USD/次）：独立于文本倍率，NULL/0 表示不收费。
+		field.Float("grok_safety_rejection_fee").
+			Optional().
+			Nillable().
+			Min(0).
+			SchemaType(map[string]string{dialect.Postgres: "decimal(20,8)"}).
+			Comment("Grok safety_review_rejected 固定费（USD/次）；NULL 或 0 表示不收费"),
 
 		// Grok Voice 显式定价（realtime / TTS / STT），不按文本 RateMultiplier。
 		field.Float("audio_realtime_price_per_min").

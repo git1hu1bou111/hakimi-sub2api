@@ -1131,6 +1131,12 @@ export default {
           'Leave empty to use the default $0.01 per call (official pricing: $10 per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
         finalPricePreview: 'Per-call price after current multiplier: {price}'
       },
+      grokSafetyFee: {
+        title: 'Grok Safety Rejection Fee',
+        price: 'Fixed fee (USD per rejection)',
+        hint:
+          'Charged only for Grok safety_review_rejected; the fixed fee is independent of text multipliers. Empty or 0 means no charge.'
+      },
       peakRate: {
         enable: 'Enable peak rate multiplier',
         peakStart: 'Peak start',

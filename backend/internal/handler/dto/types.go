@@ -135,6 +135,7 @@ type Group struct {
 	// Codex alpha/search 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
 	WebSearchPricePerCall        *float64 `json:"web_search_price_per_call"`
 	SearchPricePer1k             *float64 `json:"search_price_per_1k"`
+	GrokSafetyRejectionFee       *float64 `json:"grok_safety_rejection_fee"`
 	AudioRealtimePricePerMin     *float64 `json:"audio_realtime_price_per_min"`
 	AudioTtsPricePerMillionChars *float64 `json:"audio_tts_price_per_million_chars"`
 	AudioSttPricePerHour         *float64 `json:"audio_stt_price_per_hour"`

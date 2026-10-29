@@ -293,6 +293,36 @@ func max(a, b int) int {
 	return b
 }
 
+func TestRecordGrokSafetyRejectionUsage_ChargesFixedFee(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	subRepo := &openAIRecordUsageSubRepoStub{}
+	svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, userRepo, subRepo, nil)
+
+	fee := 0.10
+	apiKey := &APIKey{ID: 1001, Group: &Group{ID: 85, RateMultiplier: 0.09, GrokSafetyRejectionFee: &fee}}
+	apiKey.User = &User{ID: 2001}
+	svc.RecordGrokSafetyRejectionUsage(context.Background(), CyberPolicyUsageInput{
+		APIKey:             apiKey,
+		Account:            &Account{ID: 3001, Type: AccountTypeAPIKey},
+		RequestID:          "grok-safety-attempt-1",
+		Model:              "grok-5",
+		FixedFeeUSD:        fee,
+		GrokSafetyRejected: true,
+	})
+
+	require.Equal(t, 1, billingRepo.calls)
+	require.Equal(t, 1, usageRepo.calls)
+	require.NotNil(t, usageRepo.lastLog)
+	require.Equal(t, RequestTypeGrokSafetyRejected, usageRepo.lastLog.RequestType)
+	require.InDelta(t, fee, usageRepo.lastLog.TotalCost, 1e-9)
+	require.InDelta(t, fee, usageRepo.lastLog.ActualCost, 1e-9)
+	require.NotNil(t, billingRepo.lastCmd)
+	require.InDelta(t, fee, billingRepo.lastCmd.BalanceCost, 1e-9)
+	require.Zero(t, billingRepo.lastCmd.SubscriptionCost)
+}
+
 func TestOpenAIGatewayServiceRecordUsage_ZeroUsageStillWritesUsageLog(t *testing.T) {
 	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
 	billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}

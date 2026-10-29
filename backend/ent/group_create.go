@@ -538,6 +538,20 @@ func (_c *GroupCreate) SetNillableSearchPricePer1k(v *float64) *GroupCreate {
 	return _c
 }
 
+// SetGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field.
+func (_c *GroupCreate) SetGrokSafetyRejectionFee(v float64) *GroupCreate {
+	_c.mutation.SetGrokSafetyRejectionFee(v)
+	return _c
+}
+
+// SetNillableGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableGrokSafetyRejectionFee(v *float64) *GroupCreate {
+	if v != nil {
+		_c.SetGrokSafetyRejectionFee(*v)
+	}
+	return _c
+}
+
 // SetAudioRealtimePricePerMin sets the "audio_realtime_price_per_min" field.
 func (_c *GroupCreate) SetAudioRealtimePricePerMin(v float64) *GroupCreate {
 	_c.mutation.SetAudioRealtimePricePerMin(v)
@@ -1371,6 +1385,11 @@ func (_c *GroupCreate) check() error {
 			return &ValidationError{Name: "search_price_per_1k", err: fmt.Errorf(`ent: validator failed for field "Group.search_price_per_1k": %w`, err)}
 		}
 	}
+	if v, ok := _c.mutation.GrokSafetyRejectionFee(); ok {
+		if err := group.GrokSafetyRejectionFeeValidator(v); err != nil {
+			return &ValidationError{Name: "grok_safety_rejection_fee", err: fmt.Errorf(`ent: validator failed for field "Group.grok_safety_rejection_fee": %w`, err)}
+		}
+	}
 	if v, ok := _c.mutation.AudioRealtimePricePerMin(); ok {
 		if err := group.AudioRealtimePricePerMinValidator(v); err != nil {
 			return &ValidationError{Name: "audio_realtime_price_per_min", err: fmt.Errorf(`ent: validator failed for field "Group.audio_realtime_price_per_min": %w`, err)}
@@ -1651,6 +1670,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.SearchPricePer1k(); ok {
 		_spec.SetField(group.FieldSearchPricePer1k, field.TypeFloat64, value)
 		_node.SearchPricePer1k = &value
+	}
+	if value, ok := _c.mutation.GrokSafetyRejectionFee(); ok {
+		_spec.SetField(group.FieldGrokSafetyRejectionFee, field.TypeFloat64, value)
+		_node.GrokSafetyRejectionFee = &value
 	}
 	if value, ok := _c.mutation.AudioRealtimePricePerMin(); ok {
 		_spec.SetField(group.FieldAudioRealtimePricePerMin, field.TypeFloat64, value)
@@ -2553,6 +2576,30 @@ func (u *GroupUpsert) AddSearchPricePer1k(v float64) *GroupUpsert {
 // ClearSearchPricePer1k clears the value of the "search_price_per_1k" field.
 func (u *GroupUpsert) ClearSearchPricePer1k() *GroupUpsert {
 	u.SetNull(group.FieldSearchPricePer1k)
+	return u
+}
+
+// SetGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field.
+func (u *GroupUpsert) SetGrokSafetyRejectionFee(v float64) *GroupUpsert {
+	u.Set(group.FieldGrokSafetyRejectionFee, v)
+	return u
+}
+
+// UpdateGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateGrokSafetyRejectionFee() *GroupUpsert {
+	u.SetExcluded(group.FieldGrokSafetyRejectionFee)
+	return u
+}
+
+// AddGrokSafetyRejectionFee adds v to the "grok_safety_rejection_fee" field.
+func (u *GroupUpsert) AddGrokSafetyRejectionFee(v float64) *GroupUpsert {
+	u.Add(group.FieldGrokSafetyRejectionFee, v)
+	return u
+}
+
+// ClearGrokSafetyRejectionFee clears the value of the "grok_safety_rejection_fee" field.
+func (u *GroupUpsert) ClearGrokSafetyRejectionFee() *GroupUpsert {
+	u.SetNull(group.FieldGrokSafetyRejectionFee)
 	return u
 }
 
@@ -3797,6 +3844,34 @@ func (u *GroupUpsertOne) UpdateSearchPricePer1k() *GroupUpsertOne {
 func (u *GroupUpsertOne) ClearSearchPricePer1k() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearSearchPricePer1k()
+	})
+}
+
+// SetGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertOne) SetGrokSafetyRejectionFee(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetGrokSafetyRejectionFee(v)
+	})
+}
+
+// AddGrokSafetyRejectionFee adds v to the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertOne) AddGrokSafetyRejectionFee(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddGrokSafetyRejectionFee(v)
+	})
+}
+
+// UpdateGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateGrokSafetyRejectionFee() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateGrokSafetyRejectionFee()
+	})
+}
+
+// ClearGrokSafetyRejectionFee clears the value of the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertOne) ClearGrokSafetyRejectionFee() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearGrokSafetyRejectionFee()
 	})
 }
 
@@ -5285,6 +5360,34 @@ func (u *GroupUpsertBulk) UpdateSearchPricePer1k() *GroupUpsertBulk {
 func (u *GroupUpsertBulk) ClearSearchPricePer1k() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.ClearSearchPricePer1k()
+	})
+}
+
+// SetGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertBulk) SetGrokSafetyRejectionFee(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetGrokSafetyRejectionFee(v)
+	})
+}
+
+// AddGrokSafetyRejectionFee adds v to the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertBulk) AddGrokSafetyRejectionFee(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddGrokSafetyRejectionFee(v)
+	})
+}
+
+// UpdateGrokSafetyRejectionFee sets the "grok_safety_rejection_fee" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateGrokSafetyRejectionFee() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateGrokSafetyRejectionFee()
+	})
+}
+
+// ClearGrokSafetyRejectionFee clears the value of the "grok_safety_rejection_fee" field.
+func (u *GroupUpsertBulk) ClearGrokSafetyRejectionFee() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.ClearGrokSafetyRejectionFee()
 	})
 }
 

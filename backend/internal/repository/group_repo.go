@@ -124,6 +124,7 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetVideoModelPrices(service.NormalizeVideoModelPrices(groupIn.VideoModelPrices)).
 		SetNillableWebSearchPricePerCall(groupIn.WebSearchPricePerCall).
 		SetNillableSearchPricePer1k(groupIn.SearchPricePer1k).
+		SetNillableGrokSafetyRejectionFee(groupIn.GrokSafetyRejectionFee).
 		SetNillableAudioRealtimePricePerMin(groupIn.AudioRealtimePricePerMin).
 		SetNillableAudioTtsPricePerMillionChars(groupIn.AudioTTSPricePerMillionChars).
 		SetNillableAudioSttPricePerHour(groupIn.AudioSTTPricePerHour).
@@ -399,6 +400,11 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		builder = builder.SetSearchPricePer1k(*groupIn.SearchPricePer1k)
 	} else {
 		builder = builder.ClearSearchPricePer1k()
+	}
+	if groupIn.GrokSafetyRejectionFee != nil {
+		builder = builder.SetGrokSafetyRejectionFee(*groupIn.GrokSafetyRejectionFee)
+	} else {
+		builder = builder.ClearGrokSafetyRejectionFee()
 	}
 	if groupIn.AudioRealtimePricePerMin != nil {
 		builder = builder.SetAudioRealtimePricePerMin(*groupIn.AudioRealtimePricePerMin)

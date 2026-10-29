@@ -448,6 +448,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 	videoPrice1080P := normalizePrice(input.VideoPrice1080P)
 	webSearchPricePerCall := normalizePrice(input.WebSearchPricePerCall)
 	searchPricePer1k := normalizePrice(input.SearchPricePer1k)
+	grokSafetyRejectionFee := normalizePrice(input.GrokSafetyRejectionFee)
 	audioRealtimePricePerMin := normalizePrice(input.AudioRealtimePricePerMin)
 	audioTTSPricePerMillionChars := normalizePrice(input.AudioTTSPricePerMillionChars)
 	audioSTTPricePerHour := normalizePrice(input.AudioSTTPricePerHour)
@@ -614,6 +615,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		VideoModelPrices:                NormalizeVideoModelPrices(input.VideoModelPrices),
 		WebSearchPricePerCall:           webSearchPricePerCall,
 		SearchPricePer1k:                searchPricePer1k,
+		GrokSafetyRejectionFee:          grokSafetyRejectionFee,
 		AudioRealtimePricePerMin:        audioRealtimePricePerMin,
 		AudioTTSPricePerMillionChars:    audioTTSPricePerMillionChars,
 		AudioSTTPricePerHour:            audioSTTPricePerHour,
@@ -955,6 +957,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.SearchPricePer1k != nil {
 		group.SearchPricePer1k = normalizePrice(input.SearchPricePer1k)
+	}
+	if input.GrokSafetyRejectionFee != nil {
+		group.GrokSafetyRejectionFee = normalizePrice(input.GrokSafetyRejectionFee)
 	}
 	if input.AudioRealtimePricePerMin != nil {
 		group.AudioRealtimePricePerMin = normalizePrice(input.AudioRealtimePricePerMin)

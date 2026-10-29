@@ -1489,6 +1489,24 @@
           </div>
         </div>
 
+        <div
+          v-if="createForm.platform === 'grok'"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
+          <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+            {{ t("admin.groups.grokSafetyFee.title") }}
+          </h4>
+          <label class="input-label">{{ t("admin.groups.grokSafetyFee.price") }}</label>
+          <input
+            v-model.number="createForm.grok_safety_rejection_fee"
+            type="number"
+            step="0.01"
+            min="0"
+            placeholder="0.10"
+            class="input"
+          />
+          <p class="input-hint">{{ t("admin.groups.grokSafetyFee.hint") }}</p>
+        </div>
 
         <div class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400">
           <div class="flex flex-wrap items-start justify-between gap-3">
@@ -3141,6 +3159,25 @@
               }}
             </div>
           </div>
+        </div>
+
+        <div
+          v-if="editForm.platform === 'grok'"
+          class="border-t border-gray-200 pt-4 mt-4 dark:border-dark-400"
+        >
+          <h4 class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
+            {{ t("admin.groups.grokSafetyFee.title") }}
+          </h4>
+          <label class="input-label">{{ t("admin.groups.grokSafetyFee.price") }}</label>
+          <input
+            v-model.number="editForm.grok_safety_rejection_fee"
+            type="number"
+            step="0.01"
+            min="0"
+            placeholder="0.10"
+            class="input"
+          />
+          <p class="input-hint">{{ t("admin.groups.grokSafetyFee.hint") }}</p>
         </div>
 
         <!-- 固定账号获取 Codex Model Manifest（仅 openai 平台，仅编辑对话框） -->
@@ -5014,6 +5051,7 @@ const createForm = reactive({
   video_model_prices: createVideoModelPricesForm(),
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
+  grok_safety_rejection_fee: null as number | null,
   search_price_per_1k: null as number | null,
   audio_realtime_price_per_min: null as number | null,
   audio_tts_price_per_million_chars: null as number | null,
@@ -5382,6 +5420,7 @@ const editForm = reactive({
   video_model_prices: createVideoModelPricesForm(),
   // Codex 网页搜索按次计费（仅 openai 平台使用）；null = 使用默认价 0.01
   web_search_price_per_call: null as number | null,
+  grok_safety_rejection_fee: null as number | null,
   search_price_per_1k: null as number | null,
   audio_realtime_price_per_min: null as number | null,
   audio_tts_price_per_million_chars: null as number | null,
@@ -5855,6 +5894,7 @@ const closeCreateModal = () => {
   createForm.free_openai_fast = false;
   createForm.model_pricing = [];
   createForm.web_search_price_per_call = null;
+  createForm.grok_safety_rejection_fee = null;
   createForm.search_price_per_1k = null;
   createForm.audio_realtime_price_per_min = null;
   createForm.audio_tts_price_per_million_chars = null;
@@ -6073,6 +6113,9 @@ const handleCreateGroup = async () => {
     requestData.web_search_price_per_call = emptyToNull(
       requestData.web_search_price_per_call,
     );
+    requestData.grok_safety_rejection_fee = emptyToNull(
+      requestData.grok_safety_rejection_fee,
+    );
     requestData.peak_rate_enabled = createForm.peak_rate_enabled;
     requestData.peak_start = createForm.peak_start;
     requestData.peak_end = createForm.peak_end;
@@ -6151,6 +6194,7 @@ const handleEdit = async (group: AdminGroup) => {
     group.video_model_prices,
   );
   editForm.web_search_price_per_call = group.web_search_price_per_call ?? null;
+  editForm.grok_safety_rejection_fee = group.grok_safety_rejection_fee ?? null;
   editForm.search_price_per_1k = group.search_price_per_1k ?? null;
   editForm.audio_realtime_price_per_min = group.audio_realtime_price_per_min ?? null;
   editForm.audio_tts_price_per_million_chars = group.audio_tts_price_per_million_chars ?? null;
@@ -6433,6 +6477,9 @@ const handleUpdateGroup = async () => {
     );
     payload.web_search_price_per_call = emptyPriceToClear(
       payload.web_search_price_per_call,
+    );
+    payload.grok_safety_rejection_fee = emptyPriceToClear(
+      payload.grok_safety_rejection_fee,
     );
     payload.peak_rate_enabled = editForm.peak_rate_enabled;
     payload.peak_start = editForm.peak_start;

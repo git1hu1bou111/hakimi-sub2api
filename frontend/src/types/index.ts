@@ -611,6 +611,8 @@ export interface Group {
   video_model_prices?: VideoModelPrices
   // Codex 网页搜索单次价格（USD/次）；null 表示使用默认价 0.01
   web_search_price_per_call: number | null
+  // Grok safety_review_rejected 固定费（USD/次）；null/0 表示不收费
+  grok_safety_rejection_fee: number | null
   // Grok Voice 显式定价（分组级）
   search_price_per_1k: number | null
   audio_realtime_price_per_min: number | null
@@ -837,6 +839,7 @@ export interface CreateGroupRequest {
   video_price_1080p?: number | null
   video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
+  grok_safety_rejection_fee?: number | null
   search_price_per_1k?: number | null
   audio_realtime_price_per_min?: number | null
   audio_tts_price_per_million_chars?: number | null
@@ -906,6 +909,7 @@ export interface UpdateGroupRequest {
   video_price_1080p?: number | null
   video_model_prices?: VideoModelPrices
   web_search_price_per_call?: number | null
+  grok_safety_rejection_fee?: number | null
   search_price_per_1k?: number | null
   audio_realtime_price_per_min?: number | null
   audio_tts_price_per_million_chars?: number | null
