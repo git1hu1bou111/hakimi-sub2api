@@ -1135,7 +1135,7 @@ export default {
         title: 'Grok Safety Rejection Fee',
         price: 'Fixed fee (USD per rejection)',
         hint:
-          'Charged only for Grok safety_review_rejected; the fixed fee is independent of text multipliers. Empty or 0 means no charge.'
+          'Charged per xAI safety rejection (HTTP 403, "Failed check: SAFETY_CHECK_TYPE"). The fixed fee is independent of group/text multipliers and token usage; the usage row shows per-request billing with zero tokens. Browser checks, account bans/entitlement/quota limits are not charged. Rejected calls are not retried. Empty or 0 means no charge.'
       },
       peakRate: {
         enable: 'Enable peak rate multiplier',

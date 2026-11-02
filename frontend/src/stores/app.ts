@@ -14,6 +14,16 @@ import {
 } from '@/api/admin/system'
 import { getPublicSettings as fetchPublicSettingsAPI } from '@/api/auth'
 
+// Custom build tags are for operators, not for the public version badge.
+// Keep the upstream version number and drop suffixes such as
+// "0.2.21-hakimi-violation-fee".
+function normalizeDisplayVersion(value: string): string {
+  return value
+    .trim()
+    .replace(/-(?:hakimi|violation-fee)[0-9A-Za-z._-]*$/i, '')
+    .replace(/^v/i, '')
+}
+
 export const useAppStore = defineStore('app', () => {
   // ==================== State ====================
 
@@ -261,7 +271,7 @@ export const useAppStore = defineStore('app', () => {
     versionLoading.value = true
     try {
       const data = await checkUpdatesAPI(force)
-      currentVersion.value = data.current_version
+      currentVersion.value = normalizeDisplayVersion(data.current_version || '')
       latestVersion.value = data.latest_version
       hasUpdate.value = data.has_update
       buildType.value = data.build_type || 'source'
@@ -296,7 +306,7 @@ export const useAppStore = defineStore('app', () => {
     cachedPublicSettings.value = config
     siteName.value = config.site_name || 'Sub2API'
     siteLogo.value = config.site_logo || ''
-    siteVersion.value = config.version || ''
+    siteVersion.value = normalizeDisplayVersion(config.version || '')
     contactInfo.value = config.contact_info || ''
     apiBaseUrl.value = config.api_base_url || ''
     docUrl.value = config.doc_url || ''

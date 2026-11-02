@@ -1132,7 +1132,7 @@ export default {
         title: 'Grok 安全拒绝费',
         price: '固定费（USD/次）',
         hint:
-          '仅对 Grok safety_review_rejected 收取；固定费独立于文本倍率。留空或 0 表示不收费。'
+          'xAI 安全检查拒绝时按次收取（403，原文含 Failed check: SAFETY_CHECK_TYPE）。固定费不乘分组倍率、不按 token 计算；用量记录显示“按次”、token 为 0。浏览器校验、账号封禁/资格不足/额度上限不扣费；被拒不自动重试。留空或 0 表示不收费。'
       },
       peakRate: {
         enable: '启用高峰倍率',

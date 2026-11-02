@@ -351,13 +351,13 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 
-	// A confirmed Grok safety rejection is a fixed fee, independent of token
-	// rates. The fee replaces token pricing for this row; account quota is not
-	// charged because account stats cost is derived from zero tokens.
+	// A confirmed Grok safety rejection is a per-request fixed fee, independent
+	// of token rates. The fee replaces token pricing for this row; account quota
+	// is not charged because account stats cost is derived from zero tokens.
 	if input.FixedFeeUSD > 0 {
 		fee := QuantizeUsageBillingAmount(input.FixedFeeUSD)
 		cost = &CostBreakdown{
-			BillingMode: string(BillingModeToken),
+			BillingMode: string(BillingModePerRequest),
 			ActualCost:  fee,
 			TotalCost:   fee,
 		}
@@ -469,7 +469,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		usageLog.ActualCost = cost.ActualCost
 		usageLog.LongContextBillingApplied = cost.LongContextBillingApplied
 	}
-	if isVideoUsage && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
+	if input.FixedFeeUSD > 0 {
+		// The fixed rejection fee is already the final amount; it is not
+		// multiplied by the group, peak, or account rate.
+		usageLog.RateMultiplier = 1
+	} else if isVideoUsage && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = videoMultiplier
 	} else if result.ImageCount > 0 && (cost == nil || cost.BillingMode != string(BillingModeToken)) {
 		usageLog.RateMultiplier = imageMultiplier
