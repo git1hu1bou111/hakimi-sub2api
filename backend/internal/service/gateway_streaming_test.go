@@ -418,7 +418,10 @@ func TestHandleStreamingResponse_SSEErrorEvent_ReturnsTypedErrorWithRawData(t *t
 	_ = pr.Close()
 
 	require.Error(t, err)
-	require.Nil(t, result)
+	require.NotNil(t, result)
+	// The parser retains a partial result on an SSE error. Without observed
+	// tokens it must still produce no billable failed-stream usage.
+	require.Nil(t, observedStreamUsage(c, resp, result, "model", "model", time.Now()))
 
 	// typed error 必须可被 errors.As 匹配，RawData 必须保留上游 dataLine 原文
 	var sseErr *sseStreamErrorEventError

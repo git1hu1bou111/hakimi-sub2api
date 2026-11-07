@@ -13,7 +13,7 @@
 **本项目的实现方式**：确认拒绝时落一条**标准 token 用量行**（按模型官方价卡反解 token 数量与金额）。
 
 > 旧实现是"分组按次固定费"（`groups.grok_safety_rejection_fee`，`billing_mode=per_request`，
-> token 全为 0）。该实现已在本版本移除，见文末"迁移"。
+> token 全为 0）。滚动升级时仍兼容已有分组费用，见文末"迁移"。
 
 ## 为什么用"标准用量行"而不是"按次固定费"
 
@@ -75,7 +75,7 @@
 gateway:
   grok:
     safety_rejection_billing:
-      enabled: false            # 总开关；false 保持历史"拒绝免费"
+      enabled: false            # 全局 token 计费开关；未保存全局设置时仍兼容旧分组固定费
       amount_usd: 0.05          # 每确认一次拒绝的目标扣费（USD）
       cache_read_ratio_min: 0.90
       cache_read_ratio_max: 0.96
@@ -107,13 +107,15 @@ gateway:
 | `backend/internal/handler/admin/setting_handler_grok_safety_billing.go` | 后台 API |
 | `backend/internal/config/config.go` | 配置结构、默认值、校验 |
 
-## 迁移说明（移除按次固定费）
+## 迁移说明（保留已有分组收费规则）
 
-- 新版不再读写 `groups.grok_safety_rejection_fee`。哈基米主网关与独立图片进程共用数据库，因此升级时保留旧列及原有金额。清理 SQL 已移至 `deploy/manual-migrations/251_drop_group_grok_safety_rejection_fee.sql`，不参与启动迁移；只有在所有旧读方退役、金额已核对备份且确认清理后，才可单独执行。
+- 数据库没有保存新版全局设置、且 config.yaml 未开启全局计费时，新网关继续读取 `groups.grok_safety_rejection_fee`：NULL/0 免费，正数精确收取原分组金额，不乘分组、用户、高峰或账号倍率，不扣上游账号配额。仍使用零 token 的 `per_request` 行，不将旧固定费转换成合成 token。
+- 显式保存的新版全局设置优先，包括显式 `enabled=false`；启用新版全局规则后走本文的 token 计费路径，不再叠加旧固定费。兼容读取失败时不收费并记录 `policy_failed`。
+- 哈基米主网关与独立图片进程共用数据库，因此升级时保留旧列及原有金额。清理 SQL 位于 `deploy/manual-migrations/251_drop_group_grok_safety_rejection_fee.sql`，不参与启动迁移；只有在所有旧读方和兼容计费规则退役、金额已核对备份且确认清理后，才可单独执行。
   历史 `migrations/249` 保留不动，只为让已有库的升级路径可回放。
-- `groups` 创建/更新 API 不再接受 `grok_safety_rejection_fee` 字段（传了会被忽略）。
+- 新版 `groups` 创建/更新 API 不接受 `grok_safety_rejection_fee` 字段（传了会被忽略）。需要继续编辑旧分组收费规则时应保留旧管理后台；兼容读取不依赖认证快照，旧后台调整金额后新网关立即读取新值。
 - 历史 `usage_logs` 里 `request_type=6`（`grok_safety_rejected`）的行仍然可读；
-  `usage_logs_request_type_check` 仍允许 `0..6`，新记录不再写 6。
+  `usage_logs_request_type_check` 仍允许 `0..6`，兼容固定费路径继续写 6。
 - API Key 认证快照版本号提升到 `v28`，旧快照自动重建。
 
 ## 观测
@@ -121,6 +123,7 @@ gateway:
 命中并落账后输出结构化日志（`component=service.openai_gateway.grok_safety`）：
 
 - `grok_safety_rejection.billing_queued`：handler 入队
+- `grok_safety_rejection.legacy_billed`：旧分组固定费落账，金额为原配置值
 - `grok_safety_rejection.billed`：落账成功，含 `input_tokens` / `cache_read_tokens` /
   `output_tokens` / `cache_read_ratio` / `target_usd` / `billed_usd` / `multiplier`
 - `grok_safety_rejection.billing_plan_failed` / `record_usage_failed`：失败原因（不重试，避免重复扣费）

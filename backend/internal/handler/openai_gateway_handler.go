@@ -4511,7 +4511,7 @@ func (h *OpenAIGatewayHandler) recordGrokSafetyBillingIfMarked(
 	if c.GetBool(grokSafetyBillingRecordedKey) {
 		return
 	}
-	if !h.gatewayService.GrokSafetyRejectionBillingEnabled(c.Request.Context()) {
+	if !h.gatewayService.GrokSafetyRejectionBillingEnabled(c.Request.Context(), apiKey) {
 		return
 	}
 	requestID := strings.TrimSpace(mark.AttemptID)

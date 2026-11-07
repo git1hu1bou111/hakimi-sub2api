@@ -40,6 +40,7 @@ const (
 type cachedGrokSafetyBilling struct {
 	value     GrokSafetyRejectionBillingSettings
 	override  bool  // true = 数据库有覆盖值，false = 沿用 config.yaml 默认
+	err       error // billing must distinguish unavailable settings from confirmed absence
 	expiresAt int64 // unix nano
 }
 
@@ -129,13 +130,20 @@ func (s *SettingService) GetGrokSafetyRejectionBillingSettings(ctx context.Conte
 
 // GetGrokSafetyRejectionBillingState 额外返回是否由数据库覆盖（供后台展示来源）。
 func (s *SettingService) GetGrokSafetyRejectionBillingState(ctx context.Context) (GrokSafetyRejectionBillingSettings, bool) {
+	settings, override, _ := s.getGrokSafetyRejectionBillingPolicyState(ctx)
+	return settings, override
+}
+
+// Unlike the display/defaults API, billing may not interpret a failed read as
+// confirmation that no explicit global policy exists.
+func (s *SettingService) getGrokSafetyRejectionBillingPolicyState(ctx context.Context) (GrokSafetyRejectionBillingSettings, bool, error) {
 	defaults := s.GrokSafetyRejectionBillingDefaults()
 	if s == nil || s.settingRepo == nil {
-		return defaults, false
+		return defaults, false, nil
 	}
 	if cached, ok := grokSafetyBillingCache.Load().(*cachedGrokSafetyBilling); ok && cached != nil &&
 		time.Now().UnixNano() < cached.expiresAt {
-		return cached.value, cached.override
+		return cached.value, cached.override, cached.err
 	}
 
 	value, err, _ := grokSafetyBillingSF.Do("grok_safety_rejection_billing", func() (any, error) {
@@ -144,34 +152,38 @@ func (s *SettingService) GetGrokSafetyRejectionBillingState(ctx context.Context)
 		raw, getErr := s.settingRepo.GetValue(dbCtx, SettingKeyGrokSafetyRejectionBilling)
 		if getErr != nil || strings.TrimSpace(raw) == "" {
 			ttl := grokSafetyBillingCacheTTL
+			var policyErr error
 			if getErr != nil && !errors.Is(getErr, ErrSettingNotFound) {
 				ttl = grokSafetyBillingErrorTTL
+				policyErr = fmt.Errorf("read Grok safety billing settings: %w", getErr)
 			}
-			grokSafetyBillingCache.Store(&cachedGrokSafetyBilling{value: defaults, override: false, expiresAt: time.Now().Add(ttl).UnixNano()})
-			return grokSafetyBillingCachedState{settings: defaults, override: false}, nil
+			grokSafetyBillingCache.Store(&cachedGrokSafetyBilling{value: defaults, override: false, err: policyErr, expiresAt: time.Now().Add(ttl).UnixNano()})
+			return grokSafetyBillingCachedState{settings: defaults, override: false, err: policyErr}, nil
 		}
 		var stored GrokSafetyRejectionBillingSettings
 		if jsonErr := json.Unmarshal([]byte(raw), &stored); jsonErr != nil {
-			grokSafetyBillingCache.Store(&cachedGrokSafetyBilling{value: defaults, override: false, expiresAt: time.Now().Add(grokSafetyBillingErrorTTL).UnixNano()})
-			return grokSafetyBillingCachedState{settings: defaults, override: false}, nil
+			policyErr := fmt.Errorf("parse Grok safety billing settings: %w", jsonErr)
+			grokSafetyBillingCache.Store(&cachedGrokSafetyBilling{value: defaults, override: false, err: policyErr, expiresAt: time.Now().Add(grokSafetyBillingErrorTTL).UnixNano()})
+			return grokSafetyBillingCachedState{settings: defaults, override: false, err: policyErr}, nil
 		}
 		normalized := normalizeGrokSafetyBillingSettings(stored)
 		grokSafetyBillingCache.Store(&cachedGrokSafetyBilling{value: normalized, override: true, expiresAt: time.Now().Add(grokSafetyBillingCacheTTL).UnixNano()})
 		return grokSafetyBillingCachedState{settings: normalized, override: true}, nil
 	})
 	if err != nil {
-		return defaults, false
+		return defaults, false, err
 	}
 	if state, ok := value.(grokSafetyBillingCachedState); ok {
-		return state.settings, state.override
+		return state.settings, state.override, state.err
 	}
-	return defaults, false
+	return defaults, false, errors.New("invalid Grok safety billing cache state")
 }
 
 // grokSafetyBillingCachedState 是 singleflight 的返回值（设置 + 来源）。
 type grokSafetyBillingCachedState struct {
 	settings GrokSafetyRejectionBillingSettings
 	override bool
+	err      error
 }
 
 // SetGrokSafetyRejectionBillingSettings 持久化后台修改，并立刻让进程内缓存失效。

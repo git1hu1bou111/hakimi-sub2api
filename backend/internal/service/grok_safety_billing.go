@@ -136,14 +136,22 @@ func (s *OpenAIGatewayService) GrokSafetyRejectionBillingParameters(ctx context.
 }
 
 // GrokSafetyRejectionBillingEnabled 供 handler 在无标记时快速短路。
-func (s *OpenAIGatewayService) GrokSafetyRejectionBillingEnabled(ctx context.Context) bool {
-	params := s.GrokSafetyRejectionBillingParameters(ctx)
-	return params.Enabled && params.AmountUSD > 0
+func (s *OpenAIGatewayService) GrokSafetyRejectionBillingEnabled(ctx context.Context, apiKeys ...*APIKey) bool {
+	var apiKey *APIKey
+	if len(apiKeys) > 0 {
+		apiKey = apiKeys[0]
+	}
+	params, legacyFee, err := s.grokSafetyBillingPolicy(ctx, apiKey)
+	if err != nil {
+		logger.L().Warn("grok_safety_rejection.policy_failed", zap.Error(err))
+	}
+	return err == nil && (legacyFee > 0 || params.Enabled && params.AmountUSD > 0)
 }
 
 // RecordGrokSafetyRejectionUsage 为一次确认的 Grok 安全拒绝记录一条按官方价卡
 // 合成的 token 用量行：输入/输出 token 随机、缓存读取 >=90%，并且总金额命中
-// 配置的扣费额度。开关关闭或额度 <=0 时不做任何事（保持历史"拒绝免费"行为）。
+// 配置的扣费额度。未配置新版全局规则时兼容旧分组固定费；显式关闭新版
+// 设置时不回退旧规则。两条计费路径互斥，不会同时收取两次费用。
 //
 // 之所以用"普通用量行"而不是分组按次固定费：用量行是 sub2api 的原生计费载体，
 // 下游、下游的下游拿到同样的 usage 就能按 token 自然计费，不必二开或配置私有
@@ -155,7 +163,24 @@ func (s *OpenAIGatewayService) RecordGrokSafetyRejectionUsage(ctx context.Contex
 	if in.APIKey == nil || in.APIKey.User == nil || in.Account == nil {
 		return
 	}
-	params := s.GrokSafetyRejectionBillingParameters(ctx)
+	params, legacyFee, err := s.grokSafetyBillingPolicy(ctx, in.APIKey)
+	if err != nil {
+		logger.L().Warn("grok_safety_rejection.policy_failed", zap.Error(err))
+		return
+	}
+	if legacyFee > 0 {
+		if in.Account.Platform != PlatformGrok {
+			return
+		}
+		if err := s.recordLegacyGrokSafetyRejectionUsage(ctx, in, legacyFee); err != nil {
+			logger.L().Error("grok_safety_rejection.record_usage_failed", zap.Error(err))
+		} else {
+			logger.L().Info("grok_safety_rejection.legacy_billed",
+				zap.String("request_id", in.RequestID), zap.Int64("account_id", in.Account.ID),
+				zap.Float64("billed_usd", legacyFee))
+		}
+		return
+	}
 	if !params.Enabled || params.AmountUSD <= 0 {
 		return
 	}
