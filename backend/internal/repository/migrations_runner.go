@@ -124,7 +124,7 @@ func ApplyMigrations(ctx context.Context, db *sql.DB) error {
 // 迁移执行流程：
 //  1. 获取 PostgreSQL Advisory Lock，防止多实例并发迁移
 //  2. 确保 schema_migrations 表存在
-//  3. 按文件名排序读取所有 .sql 文件
+//  3. 按文件名排序读取带数字前缀的 .sql 文件
 //  4. 对于每个迁移文件：
 //     - 计算文件内容的 SHA256 校验和
 //     - 检查该迁移是否已应用（通过 filename 查询）
@@ -171,9 +171,9 @@ func applyMigrationsFS(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 		return err
 	}
 
-	// 获取所有 .sql 迁移文件并按文件名排序。
+	// Only numbered SQL files are migrations; ignore AppleDouble and other sidecars.
 	// 命名规范：使用零填充数字前缀（如 001_init.sql, 002_add_users.sql）。
-	files, err := fs.Glob(fsys, "*.sql")
+	files, err := fs.Glob(fsys, "[0-9]*.sql")
 	if err != nil {
 		return fmt.Errorf("list migrations: %w", err)
 	}
@@ -447,7 +447,7 @@ func tableExists(ctx context.Context, db migrationConnection, tableName string) 
 }
 
 func latestMigrationBaseline(fsys fs.FS) (string, string, string, error) {
-	files, err := fs.Glob(fsys, "*.sql")
+	files, err := fs.Glob(fsys, "[0-9]*.sql")
 	if err != nil {
 		return "", "", "", err
 	}

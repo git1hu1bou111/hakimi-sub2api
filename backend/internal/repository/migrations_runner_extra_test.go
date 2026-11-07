@@ -325,6 +325,35 @@ func TestApplyMigrationsFS_ReadMigrationError(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestApplyMigrationsFS_IgnoresUnnumberedSidecarFiles(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	prepareMigrationsBootstrapExpectations(mock)
+	const sql = "CREATE TABLE t(id int);"
+	checksum := migrationChecksum(sql)
+	mock.ExpectQuery("SELECT checksum FROM schema_migrations WHERE filename = \\$1").
+		WithArgs("001_already.sql").
+		WillReturnRows(sqlmock.NewRows([]string{"checksum"}).AddRow(checksum))
+	mock.ExpectExec("SELECT pg_advisory_unlock\\(\\$1\\)").
+		WithArgs(migrationsAdvisoryLockID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	fsys := fstest.MapFS{
+		"001_already.sql":   &fstest.MapFile{Data: []byte(sql)},
+		"._001_already.sql": &fstest.MapFile{Data: []byte{0, 5, 22, 7}},
+		"README.sql":        &fstest.MapFile{Data: []byte("not a numbered migration")},
+	}
+	version, description, hash, err := latestMigrationBaseline(fsys)
+	require.NoError(t, err)
+	require.Equal(t, "001_already", version)
+	require.Equal(t, version, description)
+	require.Equal(t, checksum, hash)
+	require.NoError(t, applyMigrationsFS(context.Background(), db, fsys))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestPgAdvisoryLockAndUnlock_ErrorBranches(t *testing.T) {
 	t.Run("context_cancelled_while_not_locked", func(t *testing.T) {
 		db, mock, err := sqlmock.New()

@@ -9,7 +9,9 @@ package migrations
 
 import "embed"
 
-// FS 包含本目录下所有嵌入的 SQL 迁移文件。
+// FS 只包含本目录下带数字前缀的 SQL 迁移文件。
+// Explicit glob matches include dotfiles, so *.sql would also embed macOS
+// AppleDouble sidecars such as ._001_init.sql as executable migrations.
 //
 // 迁移命名规范：
 //   - 使用零填充的数字前缀确保正确的执行顺序
@@ -30,5 +32,5 @@ import "embed"
 //	    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 //	);
 //
-//go:embed *.sql
+//go:embed [0-9]*.sql
 var FS embed.FS
