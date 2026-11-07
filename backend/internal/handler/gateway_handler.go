@@ -664,6 +664,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
+		var pending pendingFailedStreamUsage
 
 		for {
 			attemptParsedReq, err := parsedReq.CloneForBody(body)
@@ -715,6 +716,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
+					pending.exhaust(reqLog)
 					if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
 					} else {
@@ -813,6 +815,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
+					pending.exhaust(reqLog)
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
@@ -1055,8 +1058,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					pending.remember(failoverErr, submitForwardUsage)
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
+						pending.exhaust(reqLog)
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
@@ -1068,6 +1073,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 						delete(sessionSlotAccounts, account.ID)
 						continue
 					case FailoverExhausted:
+						// 重试全部耗尽：若各次尝试中上游已计量 usage，按账号开关补记，
+						// 否则该账号的上游成本在账单上完全不可见。
+						pending.exhaust(reqLog)
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
 						return
 					case FailoverCanceled:
@@ -1914,6 +1922,32 @@ func (h *GatewayHandler) calculateSubscriptionRemaining(group *service.Group, su
 func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotType string, streamStarted bool) {
 	status, errType, code, message := concurrencyErrorResponse(err, slotType)
 	h.handleStreamingAwareErrorWithCode(c, status, errType, code, message, streamStarted)
+}
+
+// Keep at most one metered attempt per logical request. Capture the originating
+// account's submission function when the attempt fails, not on the next selection.
+// Success/cancellation never drains the pending usage.
+type pendingFailedStreamUsage struct {
+	result *service.ForwardResult
+	submit func(*service.ForwardResult)
+}
+
+func (p *pendingFailedStreamUsage) remember(e *service.UpstreamFailoverError, submit func(*service.ForwardResult)) {
+	if e != nil && e.PartialResult != nil {
+		p.result, p.submit = e.PartialResult, submit
+	}
+}
+
+func (p *pendingFailedStreamUsage) exhaust(log *zap.Logger) {
+	r, submit := p.result, p.submit
+	*p = pendingFailedStreamUsage{}
+	if r == nil || submit == nil {
+		return
+	}
+	submit(r)
+	if log != nil {
+		log.Warn("gateway.failed_stream_usage_submitted", zap.Int("input_tokens", r.Usage.InputTokens), zap.Int("output_tokens", r.Usage.OutputTokens), zap.Int("cache_read_tokens", r.Usage.CacheReadInputTokens), zap.Int("cache_creation_tokens", r.Usage.CacheCreationInputTokens))
+	}
 }
 
 func (h *GatewayHandler) handleFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, platform string, streamStarted bool) {

@@ -1128,12 +1128,6 @@ export default {
           '留空使用默认价 $0.01/次（官方定价 $10/1000 次）；填 0 表示免费。实际扣费会叠加分组费率倍数。',
         finalPricePreview: '应用当前倍率后的单次价格：{price}'
       },
-      grokSafetyFee: {
-        title: 'Grok 安全拒绝费',
-        price: '固定费（USD/次）',
-        hint:
-          'xAI 安全检查拒绝时按次收取（403，原文含 Failed check: SAFETY_CHECK_TYPE）。固定费不乘分组倍率、不按 token 计算；用量记录显示“按次”、token 为 0。浏览器校验、账号封禁/资格不足/额度上限不扣费；被拒不自动重试。留空或 0 表示不收费。'
-      },
       peakRate: {
         enable: '启用高峰倍率',
         peakStart: '高峰开始',

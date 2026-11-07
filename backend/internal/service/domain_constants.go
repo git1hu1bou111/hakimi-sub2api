@@ -762,3 +762,8 @@ const AdminAPIKeyPrefix = "admin-"
 // SettingKeyAllowUserViewErrorRequests controls whether end users can view
 // their own failed requests on the usage page. Default false (opt-in).
 const SettingKeyAllowUserViewErrorRequests = "allow_user_view_error_requests"
+
+// SettingKeyGrokSafetyRejectionBilling 保存 Grok 安全审查拒绝计费的运行时
+// 开关与额度（JSON）。数据库没有该 key 时沿用 config.yaml 的
+// gateway.grok.safety_rejection_billing 默认值。
+const SettingKeyGrokSafetyRejectionBilling = "grok_safety_rejection_billing"

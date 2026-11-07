@@ -470,6 +470,43 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
+// GrokSafetyBillingDefaults 是 config.yaml 里的 Grok 安全拒绝计费默认值
+// （后台只读展示）。
+type GrokSafetyBillingDefaults struct {
+	Enabled           bool    `json:"enabled"`
+	AmountUSD         float64 `json:"amount_usd"`
+	CacheReadRatioMin float64 `json:"cache_read_ratio_min"`
+	CacheReadRatioMax float64 `json:"cache_read_ratio_max"`
+	OutputTokensMin   int     `json:"output_tokens_min"`
+	OutputTokensMax   int     `json:"output_tokens_max"`
+	MaxInputTokens    int     `json:"max_input_tokens"`
+}
+
+// GrokSafetyBillingSettings Grok 安全审查拒绝计费配置 DTO。
+// override=true 表示数据库有覆盖值；false 表示当前沿用 config.yaml 默认。
+type GrokSafetyBillingSettings struct {
+	Enabled           bool                       `json:"enabled"`
+	AmountUSD         float64                    `json:"amount_usd"`
+	CacheReadRatioMin float64                    `json:"cache_read_ratio_min"`
+	CacheReadRatioMax float64                    `json:"cache_read_ratio_max"`
+	OutputTokensMin   int                        `json:"output_tokens_min"`
+	OutputTokensMax   int                        `json:"output_tokens_max"`
+	MaxInputTokens    int                        `json:"max_input_tokens"`
+	Override          bool                       `json:"override"`
+	Defaults          *GrokSafetyBillingDefaults `json:"defaults,omitempty"`
+}
+
+// GrokSafetyBillingSettingsUpdate 保存请求体。
+type GrokSafetyBillingSettingsUpdate struct {
+	Enabled           bool    `json:"enabled"`
+	AmountUSD         float64 `json:"amount_usd"`
+	CacheReadRatioMin float64 `json:"cache_read_ratio_min"`
+	CacheReadRatioMax float64 `json:"cache_read_ratio_max"`
+	OutputTokensMin   int     `json:"output_tokens_min"`
+	OutputTokensMax   int     `json:"output_tokens_max"`
+	MaxInputTokens    int     `json:"max_input_tokens"`
+}
+
 type OpenAIImagesOAuthUnavailableCooldownSettings struct {
 	CooldownMinutes int `json:"cooldown_minutes"`
 }

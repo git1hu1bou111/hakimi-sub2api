@@ -391,7 +391,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return h.gatewayService.ForwardGrokMedia(requestCtx, c, account, endpoint, requestID, body, contentType)
 		}()
 
-		h.recordGrokSafetyFeeIfMarked(c, apiKey, account, subscription, routingModel, service.ChannelUsageFields{}, service.HashUsageRequestPayload(body))
+		h.recordGrokSafetyBillingIfMarked(c, apiKey, account, subscription, routingModel, service.ChannelUsageFields{}, service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs

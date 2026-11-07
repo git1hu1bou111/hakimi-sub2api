@@ -20,7 +20,7 @@ const (
 	RequestTypeWSV2               RequestType = 3
 	RequestTypeCyberBlocked       RequestType = 4 // cyber_policy 命中（透传但被上游安全策略拒绝）
 	RequestTypeLive               RequestType = 5
-	RequestTypeGrokSafetyRejected RequestType = 6 // Grok safety_review_rejected 固定费
+	RequestTypeGrokSafetyRejected RequestType = 6 // 历史值：旧版按次固定费的安全拒绝行；新记录不再写入
 )
 
 func (t RequestType) IsValid() bool {

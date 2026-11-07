@@ -683,11 +683,15 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 // 不变式：UpstreamFailoverError 必须保持 result=nil——failover 重试成功后按成功请求
 // 计费，若同时返回部分 usage 会造成双重计费，此处显式拦截兜底。
 func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
-	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
-		return nil
-	}
 	var failoverErr *UpstreamFailoverError
 	if errors.As(err, &failoverErr) {
+		return nil
+	}
+	return observedStreamUsage(c, resp, streamResult, model, upstreamModel, startTime)
+}
+
+func observedStreamUsage(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time) *ForwardResult {
+	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
 		return nil
 	}
 	return &ForwardResult{
@@ -1063,11 +1067,17 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 							"message": disconnectMsg,
 						},
 					})
-					return nil, &UpstreamFailoverError{
+					failoverErr := &UpstreamFailoverError{
 						StatusCode:             http.StatusBadGateway,
 						ResponseBody:           body,
 						RetryableOnSameAccount: true,
 					}
+					// 重试成功时 handler 会丢弃该字段（见 partialStreamUsageResult 的不变式），
+					// 只有重试全部耗尽才用于补记上游已计量成本。
+					if account.ShouldRecordFailedStreamUsage() {
+						failoverErr.PartialResult = observedStreamUsage(c, resp, &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, originalModel, mappedModel, startTime)
+					}
+					return nil, failoverErr
 				}
 				sendErrorEvent("stream_read_error", disconnectMsg)
 				return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, fmt.Errorf("stream read error: %w", ev.err)
@@ -1086,7 +1096,7 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 					if clientDisconnected {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 					}
-					return nil, err
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs}, err
 				}
 
 				for _, block := range outputBlocks {

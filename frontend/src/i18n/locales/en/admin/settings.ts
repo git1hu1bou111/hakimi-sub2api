@@ -1084,6 +1084,34 @@ export default {
         saved: '429 default cooldown settings saved',
         saveFailed: 'Failed to save 429 default cooldown settings'
       },
+      grokSafetyBilling: {
+        title: 'Grok Safety Rejection Billing',
+        description:
+          'When upstream confirms a Grok safety rejection (403 safety_review_rejected / violation_fee.grok.* / SAFETY_CHECK_TYPE), a standard token usage row is synthesized from the official price card. Downstream instances that bill by tokens can reuse that row without any fork.',
+        enabled: 'Enable safety-rejection billing',
+        enabledHint:
+          'When off, rejections stay free (historical behaviour). Bare 403s, content-policy refusals and entitlement/quota denials are never charged.',
+        amountUsd: 'Target billed amount per rejection (USD)',
+        amountUsdHint:
+          'The synthesized usage is solved so the billed amount lands on this value, after group/user and peak multipliers.',
+        cacheReadRatioMin: 'Cache-read ratio floor',
+        cacheReadRatioMinHint:
+          'Share of the synthesized prompt booked as cache reads; hard floor 0.90 (0.90-1).',
+        cacheReadRatioMax: 'Cache-read ratio ceiling',
+        cacheReadRatioMaxHint:
+          'Must be >= the floor and <= 1; defaults to floor + 0.06.',
+        outputTokensMin: 'Output tokens min',
+        outputTokensMax: 'Output tokens max',
+        outputTokensHint:
+          'Output tokens are drawn from this range; the tail is then trimmed to minimise the amount residual.',
+        maxInputTokens: 'Synthesized input token cap',
+        maxInputTokensHint:
+          'Guards against a misconfigured amount synthesizing an absurd prompt (default 500000).',
+        defaultsHint: 'Using config-file defaults',
+        overrideHint: 'Using saved admin override',
+        saved: 'Grok safety-rejection billing settings saved',
+        saveFailed: 'Failed to save Grok safety-rejection billing settings'
+      },
       streamTimeout: {
         title: 'Stream Timeout Handling',
         description: 'Configure account handling strategy when upstream response times out',

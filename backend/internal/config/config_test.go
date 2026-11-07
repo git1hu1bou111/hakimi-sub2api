@@ -46,6 +46,39 @@ func TestLoadMinOutputTokensFromEnv(t *testing.T) {
 	require.Equal(t, 16, cfg.Gateway.MinOutputTokens)
 }
 
+// Grok 安全拒绝计费：默认关闭，额度与合成用量形态有稳定默认值。
+func TestLoadDefaultGrokSafetyRejectionBilling(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	billing := cfg.Gateway.Grok.SafetyRejectionBilling
+	require.False(t, billing.Enabled, "安全拒绝计费默认关闭，保持历史免费行为")
+	require.Equal(t, 0.05, billing.AmountUSD)
+	require.Equal(t, 0.90, billing.CacheReadRatioMin)
+	require.Equal(t, 0.96, billing.CacheReadRatioMax)
+	require.Equal(t, 32, billing.OutputTokensMin)
+	require.Equal(t, 256, billing.OutputTokensMax)
+	require.Equal(t, 500_000, billing.MaxInputTokens)
+}
+
+// 缓存读取占比下限低于 0.90 时必须被校验拒绝（否则合成用量形态不成立）。
+func TestValidateRejectsGrokSafetyBillingCacheRatioBelowFloor(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+
+	cfg.Gateway.Grok.SafetyRejectionBilling = GatewayGrokSafetyRejectionBillingConfig{
+		Enabled:           true,
+		AmountUSD:         0.05,
+		CacheReadRatioMin: 0.50,
+		CacheReadRatioMax: 0.96,
+	}
+	err = cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cache_read_ratio_min")
+}
+
 func TestLoadGeminiSameAccountRetries(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

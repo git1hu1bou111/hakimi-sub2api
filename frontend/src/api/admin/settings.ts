@@ -1586,6 +1586,54 @@ export async function resetWebSearchUsage(payload: {
   );
 }
 
+// ==================== Grok Safety Rejection Billing ====================
+
+/**
+ * Grok 安全审查拒绝计费配置。
+ *
+ * 开启后，上游确认的安全拒绝会落一条按官方价卡合成的标准 token 用量行
+ * （缓存读取 >= 90%），金额命中 amount_usd；下游按 token 计费的实例可直接复用。
+ */
+export interface GrokSafetyBillingSettings {
+  enabled: boolean;
+  amount_usd: number;
+  cache_read_ratio_min: number;
+  cache_read_ratio_max: number;
+  output_tokens_min: number;
+  output_tokens_max: number;
+  max_input_tokens: number;
+}
+
+export interface GrokSafetyBillingSettingsResponse extends GrokSafetyBillingSettings {
+  /** true = 使用后台保存值；false = 沿用 config.yaml 默认 */
+  override: boolean;
+  defaults?: GrokSafetyBillingSettings;
+}
+
+export async function getGrokSafetyBillingSettings(): Promise<GrokSafetyBillingSettingsResponse> {
+  const { data } = await apiClient.get<GrokSafetyBillingSettingsResponse>(
+    "/admin/settings/grok-safety-billing",
+  );
+  return data;
+}
+
+export async function updateGrokSafetyBillingSettings(
+  settings: GrokSafetyBillingSettings,
+): Promise<GrokSafetyBillingSettingsResponse> {
+  const { data } = await apiClient.put<GrokSafetyBillingSettingsResponse>(
+    "/admin/settings/grok-safety-billing",
+    settings,
+  );
+  return data;
+}
+
+export async function resetGrokSafetyBillingSettings(): Promise<GrokSafetyBillingSettingsResponse> {
+  const { data } = await apiClient.delete<GrokSafetyBillingSettingsResponse>(
+    "/admin/settings/grok-safety-billing",
+  );
+  return data;
+}
+
 export const settingsAPI = {
   getSettings,
   updateSettings,
@@ -1603,6 +1651,9 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getGrokSafetyBillingSettings,
+  updateGrokSafetyBillingSettings,
+  resetGrokSafetyBillingSettings,
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,
