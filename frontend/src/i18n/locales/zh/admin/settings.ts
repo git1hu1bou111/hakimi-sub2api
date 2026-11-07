@@ -1078,6 +1078,32 @@ export default {
         saved: '429 默认回避设置保存成功',
         saveFailed: '保存 429 默认回避设置失败'
       },
+      grokSafetyBilling: {
+        title: 'Grok 安全审查拒绝计费',
+        description:
+          '上游确认 Grok 安全拒绝（403 safety_review_rejected / violation_fee.grok.* / SAFETY_CHECK_TYPE）时，按官方价卡合成一条标准 token 用量行来扣费。下游按 token 计费的实例可直接复用这条用量，无需二开。',
+        enabled: '启用安全拒绝计费',
+        enabledHint:
+          '关闭后拒绝保持免费（历史行为）。裸 403、内容策略拒绝、账号额度/封禁拒绝一律不收费。',
+        amountUsd: '每次目标扣费（USD）',
+        amountUsdHint:
+          '合成用量按模型官方价卡反解，使实际扣费命中该额度；已含分组/用户倍率与高峰因子。',
+        cacheReadRatioMin: '缓存读取占比下限',
+        cacheReadRatioMinHint:
+          '合成 prompt 中按缓存读取记账的比例，硬下限 0.90（0.90-1）。',
+        cacheReadRatioMax: '缓存读取占比上限',
+        cacheReadRatioMaxHint: '需 >= 下限且 <= 1，默认在下限基础上 +0.06。',
+        outputTokensMin: '输出 token 下限',
+        outputTokensMax: '输出 token 上限',
+        outputTokensHint: '输出 token 在该区间内随机，用于把金额残差压到最小。',
+        maxInputTokens: '合成输入 token 上限',
+        maxInputTokensHint:
+          '防止额度配置笔误合成出离谱 prompt（默认 500000）。',
+        defaultsHint: '当前沿用配置文件默认值',
+        overrideHint: '当前使用后台保存值',
+        saved: 'Grok 安全拒绝计费设置保存成功',
+        saveFailed: '保存 Grok 安全拒绝计费设置失败'
+      },
       streamTimeout: {
         title: '流超时处理',
         description: '配置上游响应超时时的账户处理策略，避免问题账户持续被选中',

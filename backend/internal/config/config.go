@@ -1169,6 +1169,39 @@ type GatewayGrokConfig struct {
 	// FreeQuotaStatsCacheSeconds is the soft-gate stats cache TTL. Hot path never
 	// waits on usage_logs; misses fail open and refresh asynchronously.
 	FreeQuotaStatsCacheSeconds int `mapstructure:"free_quota_stats_cache_seconds"`
+
+	// SafetyRejectionBilling 为确认的 Grok 安全审查拒绝
+	//（403 safety_review_rejected / violation_fee.grok.* / SAFETY_CHECK_TYPE）
+	// 落一条 token 用量行。裸 403、内容策略拒绝（new_sensitive）、账号额度拒绝
+	// 都不匹配，因此账号级拒绝仍然免费。
+	SafetyRejectionBilling GatewayGrokSafetyRejectionBillingConfig `mapstructure:"safety_rejection_billing"`
+}
+
+// GatewayGrokSafetyRejectionBillingConfig 控制"确认的 Grok 安全拒绝"是否落一条
+// 用量行，以及该行的形态。
+//
+// 扣费以**普通 token 用量行**的形式落地，按模型官方价卡计价：输入/输出 token
+// 数量随机，prompt 侧至少 cache_read_ratio_min（>= 0.90）按缓存读取记账，求解器
+// 反解出让实际扣费落在 amount_usd 上的 token 组合。这样下游（以及下游的下游）
+// 不需要二开 sub2api：拒绝产生的就是一条标准用量行，任何按 token 计费的实例都能
+// 自然计费，无需理解"安全拒绝固定费"这种私有配置。
+//
+//   - enabled: 总开关；false 保持历史"拒绝免费"行为。
+//   - amount_usd: 每确认一次拒绝的目标扣费额度（USD），已含分组/用户倍率。
+//     非正数时即使 enabled=true 也不收费。
+//   - cache_read_ratio_min / cache_read_ratio_max: 合成 prompt 的缓存读取占比，
+//     会被夹到 [0.90, 1.0]，min 缺省 0.90。
+//   - output_tokens_min / output_tokens_max: 输出 token 随机区间。
+//   - max_input_tokens: 输入 token 上限，避免额度配置笔误合成出离谱的 prompt
+//     （默认 500000）。
+type GatewayGrokSafetyRejectionBillingConfig struct {
+	Enabled           bool    `mapstructure:"enabled"`
+	AmountUSD         float64 `mapstructure:"amount_usd"`
+	CacheReadRatioMin float64 `mapstructure:"cache_read_ratio_min"`
+	CacheReadRatioMax float64 `mapstructure:"cache_read_ratio_max"`
+	OutputTokensMin   int     `mapstructure:"output_tokens_min"`
+	OutputTokensMax   int     `mapstructure:"output_tokens_max"`
+	MaxInputTokens    int     `mapstructure:"max_input_tokens"`
 }
 
 // GatewayCNProvidersConfig 国产 OpenAI 兼容供应商（kimi/zhipu/deepseek）的余额检测配置。
@@ -2520,6 +2553,14 @@ func setDefaults() {
 	viper.SetDefault("gateway.grok.free_quota_soft_gate_percent", 95)
 	viper.SetDefault("gateway.grok.free_quota_window_hours", 24)
 	viper.SetDefault("gateway.grok.free_quota_stats_cache_seconds", 60)
+	// Grok 安全拒绝计费：确认拒绝时落一条合成 token 用量行（默认关闭，保持历史免费行为）。
+	viper.SetDefault("gateway.grok.safety_rejection_billing.enabled", false)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.amount_usd", 0.05)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.cache_read_ratio_min", 0.90)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.cache_read_ratio_max", 0.96)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.output_tokens_min", 32)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.output_tokens_max", 256)
+	viper.SetDefault("gateway.grok.safety_rejection_billing.max_input_tokens", 500_000)
 	// 国产供应商余额检测（kimi/deepseek payg；zhipu 无余额端点，仅靠响应式 429/402）。
 	viper.SetDefault("gateway.cn_providers.balance_check_enabled", true)
 	viper.SetDefault("gateway.cn_providers.balance_threshold", 0.5)
@@ -3788,6 +3829,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.Grok.FreeQuotaStatsCacheSeconds < 0 {
 		return fmt.Errorf("gateway.grok.free_quota_stats_cache_seconds must be non-negative")
+	}
+	if billing := c.Gateway.Grok.SafetyRejectionBilling; billing.Enabled {
+		if billing.AmountUSD < 0 {
+			return fmt.Errorf("gateway.grok.safety_rejection_billing.amount_usd must be non-negative")
+		}
+		if billing.CacheReadRatioMin < 0.90 || billing.CacheReadRatioMin > 1 {
+			return fmt.Errorf("gateway.grok.safety_rejection_billing.cache_read_ratio_min must be between 0.90 and 1")
+		}
+		if billing.CacheReadRatioMax < billing.CacheReadRatioMin || billing.CacheReadRatioMax > 1 {
+			return fmt.Errorf("gateway.grok.safety_rejection_billing.cache_read_ratio_max must be between cache_read_ratio_min and 1")
+		}
+		if billing.OutputTokensMin < 0 || billing.OutputTokensMax < billing.OutputTokensMin {
+			return fmt.Errorf("gateway.grok.safety_rejection_billing output token range is invalid")
+		}
+		if billing.MaxInputTokens < 0 {
+			return fmt.Errorf("gateway.grok.safety_rejection_billing.max_input_tokens must be non-negative")
+		}
 	}
 	if err := ValidateDingTalkConfig(c.DingTalk); err != nil {
 		return fmt.Errorf("dingtalk_connect: %w", err)

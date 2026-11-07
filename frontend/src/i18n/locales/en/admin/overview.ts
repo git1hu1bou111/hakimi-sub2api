@@ -1131,12 +1131,6 @@ export default {
           'Leave empty to use the default $0.01 per call (official pricing: $10 per 1,000 calls); 0 means free. The group rate multiplier is applied on top.',
         finalPricePreview: 'Per-call price after current multiplier: {price}'
       },
-      grokSafetyFee: {
-        title: 'Grok Safety Rejection Fee',
-        price: 'Fixed fee (USD per rejection)',
-        hint:
-          'Charged per xAI safety rejection (HTTP 403, "Failed check: SAFETY_CHECK_TYPE"). The fixed fee is independent of group/text multipliers and token usage; the usage row shows per-request billing with zero tokens. Browser checks, account bans/entitlement/quota limits are not charged. Rejected calls are not retried. Empty or 0 means no charge.'
-      },
       peakRate: {
         enable: 'Enable peak rate multiplier',
         peakStart: 'Peak start',
