@@ -4540,6 +4540,7 @@ func (h *OpenAIGatewayHandler) recordGrokSafetyBillingIfMarked(
 	clientIP := strings.TrimSpace(ip.GetClientIP(c))
 	sessionID := service.ExtractClientSessionID(c)
 	pricingAt := time.Now()
+	upstreamModel := strings.TrimSpace(mark.Model)
 	apiKeySvc := h.apiKeyService
 	gwSvc := h.gatewayService
 
@@ -4549,6 +4550,7 @@ func (h *OpenAIGatewayHandler) recordGrokSafetyBillingIfMarked(
 			Account:            account,
 			Subscription:       subscription,
 			Model:              model,
+			UpstreamModel:      upstreamModel,
 			Stream:             stream,
 			RequestID:          requestID,
 			InboundEndpoint:    inboundEndpoint,

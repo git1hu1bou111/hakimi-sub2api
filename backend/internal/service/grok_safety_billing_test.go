@@ -183,3 +183,141 @@ func TestRecordGrokSafetyRejectionUsage_BillsCacheHeavyUsageRow(t *testing.T) {
 	require.NotNil(t, log.BillingMode)
 	require.Equal(t, string(BillingModeToken), *log.BillingMode, "拒绝扣费走 token 计费口径，不再按次")
 }
+
+// Different requested, channel and upstream price cards must still produce the
+// configured charge. An unpriced public alias must use the mapped card too.
+func TestRecordGrokSafetyRejectionUsage_UsesFinalBillingModel(t *testing.T) {
+	const target = 0.05
+	tests := []struct {
+		name      string
+		requested string
+		source    string
+		price     float64
+	}{
+		{"requested", "grok-review-requested", BillingModelSourceRequested, 1e-6},
+		{"channel_mapped", "grok-review-requested", BillingModelSourceChannelMapped, 5e-6},
+		{"upstream", "grok-review-requested", BillingModelSourceUpstream, 1e-5},
+		{"unpriced_alias", "public-review-alias", BillingModelSourceChannelMapped, 5e-6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, usageRepo, _ := newGrokSafetyBillingTestService()
+			apiKey := grokSafetyTestAPIKey()
+			apiKey.GroupID = &apiKey.Group.ID
+			enableGrokSafetyBillingForReviewTest(svc, target)
+			cards := map[string]*ChannelModelPricing{}
+			for model, price := range map[string]float64{
+				"grok-review-requested": 1e-6,
+				"grok-review-mapped":    5e-6,
+				"grok-review-upstream":  1e-5,
+			} {
+				price := price
+				cards[model] = &ChannelModelPricing{
+					BillingMode: BillingModeToken,
+					InputPrice:  &price, CacheReadPrice: &price, OutputPrice: &price,
+				}
+			}
+			setGrokSafetyReviewPricing(svc, apiKey.Group.ID, cards)
+			svc.RecordGrokSafetyRejectionUsage(context.Background(), GrokSafetyRejectionBillingInput{
+				APIKey:  apiKey,
+				Account: &Account{ID: 61, Platform: PlatformGrok, Type: AccountTypeOAuth},
+				Model:   tt.requested, UpstreamModel: "grok-review-upstream", RequestID: tt.name,
+				ChannelUsageFields: ChannelUsageFields{
+					OriginalModel: tt.requested, ChannelMappedModel: "grok-review-mapped",
+					BillingModelSource: tt.source,
+				},
+			})
+			require.Equal(t, 1, usageRepo.calls)
+			row := usageRepo.lastLog
+			require.NotNil(t, row)
+			require.InDelta(t, target, row.ActualCost, 1e-6)
+			totalTokens := row.InputTokens + row.CacheReadTokens + row.OutputTokens
+			require.InDelta(t, target/tt.price, totalTokens, 1,
+				"the synthesized tokens must use the selected card before RecordUsage recalculates them")
+		})
+	}
+}
+
+func TestRecordGrokSafetyRejectionUsage_RejectsNonTokenPricing(t *testing.T) {
+	for _, mode := range []BillingMode{BillingModePerRequest, BillingModeImage, BillingModeVideo} {
+		t.Run(string(mode), func(t *testing.T) {
+			svc, usageRepo, userRepo := newGrokSafetyBillingTestService()
+			apiKey := grokSafetyTestAPIKey()
+			apiKey.GroupID = &apiKey.Group.ID
+			enableGrokSafetyBillingForReviewTest(svc, 0.05)
+			fixedPrice := 0.201
+			setGrokSafetyReviewPricing(svc, apiKey.Group.ID, map[string]*ChannelModelPricing{
+				"grok-review-fixed": {BillingMode: mode, PerRequestPrice: &fixedPrice},
+			})
+			account := &Account{ID: 61, Platform: PlatformGrok, Type: AccountTypeOAuth}
+			plan, err := svc.BuildGrokSafetyBillingPlan(context.Background(), apiKey, account,
+				"grok-review-fixed", grokSafetyTestParams(0.05), time.Now(), rand.New(rand.NewSource(1)))
+			require.ErrorContains(t, err, "not token pricing")
+			require.Nil(t, plan)
+			svc.RecordGrokSafetyRejectionUsage(context.Background(), GrokSafetyRejectionBillingInput{
+				APIKey: apiKey, Account: account, Model: "grok-review-fixed", RequestID: "fixed-" + string(mode),
+			})
+			require.Zero(t, usageRepo.calls, "must not charge the channel's fixed price as the configured safety fee")
+			require.Zero(t, userRepo.deductCalls)
+		})
+	}
+}
+
+func TestRecordGrokSafetyRejectionUsage_RejectsUnreachableAmount(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		price      float64
+		inputLimit int
+	}{
+		{"input_limit_below_target", 1e-6, 10},
+		{"minimum_token_above_target", 0.1, 500_000},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, usageRepo, userRepo := newGrokSafetyBillingTestService()
+			apiKey := grokSafetyTestAPIKey()
+			apiKey.GroupID = &apiKey.Group.ID
+			enableGrokSafetyBillingForReviewTest(svc, 0.05)
+			svc.cfg.Gateway.Grok.SafetyRejectionBilling.MaxInputTokens = tt.inputLimit
+			price := tt.price
+			setGrokSafetyReviewPricing(svc, apiKey.Group.ID, map[string]*ChannelModelPricing{
+				"grok-review-unreachable": {
+					BillingMode: BillingModeToken,
+					InputPrice:  &price, CacheReadPrice: &price, OutputPrice: &price,
+				},
+			})
+			account := &Account{ID: 61, Platform: PlatformGrok, Type: AccountTypeOAuth}
+			params := GrokSafetyBillingParametersFromConfig(svc.cfg.Gateway.Grok.SafetyRejectionBilling)
+			plan, err := svc.BuildGrokSafetyBillingPlan(context.Background(), apiKey, account,
+				"grok-review-unreachable", params, time.Now(), rand.New(rand.NewSource(1)))
+			require.ErrorContains(t, err, "cannot be reached within tolerance")
+			require.Nil(t, plan)
+
+			svc.RecordGrokSafetyRejectionUsage(context.Background(), GrokSafetyRejectionBillingInput{
+				APIKey: apiKey, Account: account, Model: "grok-review-unreachable", RequestID: tt.name,
+			})
+			require.Zero(t, usageRepo.calls, "unreachable fees must not write misleading usage")
+			require.Zero(t, userRepo.deductCalls, "unreachable fees must not charge a different amount")
+		})
+	}
+}
+
+func enableGrokSafetyBillingForReviewTest(svc *OpenAIGatewayService, amount float64) {
+	svc.cfg.Gateway.Grok.SafetyRejectionBilling = config.GatewayGrokSafetyRejectionBillingConfig{
+		Enabled: true, AmountUSD: amount,
+		CacheReadRatioMin: 1, CacheReadRatioMax: 1,
+		OutputTokensMin: 32, OutputTokensMax: 32, MaxInputTokens: 500_000,
+	}
+}
+
+func setGrokSafetyReviewPricing(svc *OpenAIGatewayService, groupID int64, cards map[string]*ChannelModelPricing) {
+	cache := newEmptyChannelCache()
+	for model, card := range cards {
+		cache.pricingByGroupModel[channelModelKey{groupID: groupID, platform: PlatformGrok, model: model}] = card
+	}
+	cache.channelByGroupID[groupID] = &Channel{ID: groupID, Status: StatusActive}
+	cache.groupPlatform[groupID] = PlatformGrok
+	cache.loadedAt = time.Now()
+	channels := &ChannelService{}
+	channels.cache.Store(cache)
+	svc.resolver = NewModelPricingResolver(channels, svc.billingService)
+}

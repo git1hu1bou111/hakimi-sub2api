@@ -79,8 +79,10 @@ type GrokSafetyRejectionBillingInput struct {
 	APIKey       *APIKey
 	Account      *Account
 	Subscription *UserSubscription
-	// Model 是本次请求实际计价的模型（通常是上游模型，缺省回退 grok 默认文本模型）。
-	Model string
+	// Model is the requested model; UpstreamModel is captured from the rejection.
+	// ChannelUsageFields selects the same billing model as ordinary usage.
+	Model         string
+	UpstreamModel string
 	// Stream 只影响用量行的 transport 语义（sync/stream），不影响计费。
 	Stream             bool
 	RequestID          string
@@ -161,8 +163,22 @@ func (s *OpenAIGatewayService) RecordGrokSafetyRejectionUsage(ctx context.Contex
 	if pricingAt.IsZero() {
 		pricingAt = timezone.Now()
 	}
+	result := &OpenAIForwardResult{
+		RequestID:     in.RequestID,
+		Model:         strings.TrimSpace(in.Model),
+		UpstreamModel: strings.TrimSpace(in.UpstreamModel),
+		BillingModel:  strings.TrimSpace(in.UpstreamModel),
+		Stream:        in.Stream,
+	}
+	if result.Model == "" {
+		result.Model = result.UpstreamModel
+		if result.Model == "" {
+			result.Model = grokDefaultResponsesModel
+		}
+	}
+	billingModels := openAIRecordUsageBillingModels(result, in.ChannelUsageFields)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // 仅用于用量形态随机化，不涉及安全用途
-	plan, err := s.BuildGrokSafetyBillingPlan(ctx, in.APIKey, in.Account, in.Model, params, pricingAt, rng)
+	plan, err := s.buildGrokSafetyBillingPlan(ctx, in.APIKey, in.Account, billingModels, params, pricingAt, rng)
 	if err != nil {
 		logger.L().With(
 			zap.String("component", "service.openai_gateway.grok_safety"),
@@ -175,15 +191,10 @@ func (s *OpenAIGatewayService) RecordGrokSafetyRejectionUsage(ctx context.Contex
 		return
 	}
 
-	result := &OpenAIForwardResult{
-		RequestID: in.RequestID,
-		Model:     plan.Model,
-		Stream:    in.Stream,
-		Usage: OpenAIUsage{
-			InputTokens:          plan.TotalInputTokens,
-			CacheReadInputTokens: plan.CacheReadTokens,
-			OutputTokens:         plan.OutputTokens,
-		},
+	result.Usage = OpenAIUsage{
+		InputTokens:          plan.TotalInputTokens,
+		CacheReadInputTokens: plan.CacheReadTokens,
+		OutputTokens:         plan.OutputTokens,
 	}
 	if err := s.RecordUsage(ctx, &OpenAIRecordUsageInput{
 		Result:             result,
@@ -248,6 +259,22 @@ func (s *OpenAIGatewayService) BuildGrokSafetyBillingPlan(
 	pricingAt time.Time,
 	rng *rand.Rand,
 ) (*GrokSafetyBillingPlan, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = grokDefaultResponsesModel
+	}
+	return s.buildGrokSafetyBillingPlan(ctx, apiKey, account, usageBillingModelCandidates(model), params, pricingAt, rng)
+}
+
+func (s *OpenAIGatewayService) buildGrokSafetyBillingPlan(
+	ctx context.Context,
+	apiKey *APIKey,
+	account *Account,
+	billingModels []string,
+	params GrokSafetyBillingParameters,
+	pricingAt time.Time,
+	rng *rand.Rand,
+) (*GrokSafetyBillingPlan, error) {
 	if s == nil || s.billingService == nil {
 		return nil, errors.New("grok safety billing: billing service is not configured")
 	}
@@ -262,10 +289,7 @@ func (s *OpenAIGatewayService) BuildGrokSafetyBillingPlan(
 	if target <= 0 {
 		return nil, errors.New("grok safety billing: amount_usd must be positive")
 	}
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = grokDefaultResponsesModel
-	}
+	model := firstUsageBillingModel(billingModels)
 	if pricingAt.IsZero() {
 		pricingAt = timezone.Now()
 	}
@@ -305,14 +329,18 @@ func (s *OpenAIGatewayService) BuildGrokSafetyBillingPlan(
 			CacheReadTokens: cacheRead,
 			OutputTokens:    outputTokens,
 		}
-		bd, evalErr := s.calculateOpenAIRecordUsageTokenCost(
-			ctx, apiKey, model, multiplier, pricingAt, tokens, "", "", longContextGate, false,
+		bd, evalErr := s.calculateOpenAIRecordUsageCost(
+			ctx, &OpenAIForwardResult{}, apiKey, billingModels,
+			multiplier, multiplier, multiplier, multiplier, tokens, "", longContextGate, false, pricingAt,
 		)
 		if evalErr != nil {
 			return 0, nil, evalErr
 		}
 		if bd == nil {
 			return 0, nil, fmt.Errorf("grok safety billing: empty cost breakdown for model %s", model)
+		}
+		if bd.BillingMode != "" && bd.BillingMode != string(BillingModeToken) {
+			return 0, nil, fmt.Errorf("grok safety billing: model %s uses %s pricing, not token pricing", model, bd.BillingMode)
 		}
 		return bd.ActualCost, bd, nil
 	}
@@ -432,6 +460,11 @@ func (s *OpenAIGatewayService) BuildGrokSafetyBillingPlan(
 		}
 	}
 
+	billedUSD := QuantizeUsageBillingAmount(bestCost)
+	if math.IsNaN(billedUSD) || math.IsInf(billedUSD, 0) || math.Abs(billedUSD-target) > tolerance {
+		return nil, fmt.Errorf("grok safety billing: target %.8f USD cannot be reached within tolerance %.8f (closest %.8f)", target, tolerance, billedUSD)
+	}
+
 	plan := &GrokSafetyBillingPlan{
 		Model:            model,
 		Multiplier:       multiplier,
@@ -441,7 +474,7 @@ func (s *OpenAIGatewayService) BuildGrokSafetyBillingPlan(
 		OutputTokens:     bestOutput,
 		CacheReadRatio:   bestRatio,
 		TargetUSD:        target,
-		BilledUSD:        QuantizeUsageBillingAmount(bestCost),
+		BilledUSD:        billedUSD,
 		Cost:             bestBreakdown,
 	}
 	if plan.TotalInputTokens > 0 {

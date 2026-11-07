@@ -112,11 +112,19 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 	// Anthropic Fast is requested with speed=fast rather than OpenAI's
 	// service_tier. Attach it at this shared boundary so passthrough, OAuth and
-	// partial-stream results all use the same billing and usage-log path.
+	// partial-stream results (including failover-carried usage) use the same
+	// billing and usage-log path.
 	defer func() {
-		if result != nil {
-			if tier := anthropicSpeedServiceTier(account, parsed.Speed, anthropicSpeedModel(parsed, result)); tier != nil {
-				result.ServiceTier = tier
+		billingResult := result
+		if billingResult == nil {
+			var failoverErr *UpstreamFailoverError
+			if errors.As(err, &failoverErr) {
+				billingResult = failoverErr.PartialResult
+			}
+		}
+		if billingResult != nil {
+			if tier := anthropicSpeedServiceTier(account, parsed.Speed, anthropicSpeedModel(parsed, billingResult)); tier != nil {
+				billingResult.ServiceTier = tier
 			}
 		}
 	}()
