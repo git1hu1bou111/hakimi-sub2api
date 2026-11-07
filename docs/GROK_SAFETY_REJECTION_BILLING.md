@@ -109,7 +109,7 @@ gateway:
 
 ## 迁移说明（移除按次固定费）
 
-- `groups.grok_safety_rejection_fee` 列被删除（`migrations/251_drop_group_grok_safety_rejection_fee.sql`）；
+- 新版不再读写 `groups.grok_safety_rejection_fee`。哈基米主网关与独立图片进程共用数据库，因此升级时保留旧列及原有金额。清理 SQL 已移至 `deploy/manual-migrations/251_drop_group_grok_safety_rejection_fee.sql`，不参与启动迁移；只有在所有旧读方退役、金额已核对备份且确认清理后，才可单独执行。
   历史 `migrations/249` 保留不动，只为让已有库的升级路径可回放。
 - `groups` 创建/更新 API 不再接受 `grok_safety_rejection_fee` 字段（传了会被忽略）。
 - 历史 `usage_logs` 里 `request_type=6`（`grok_safety_rejected`）的行仍然可读；
