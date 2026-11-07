@@ -664,6 +664,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	for {
 		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
+		var pending pendingFailedStreamUsage
 
 		for {
 			attemptParsedReq, err := parsedReq.CloneForBody(body)
@@ -715,6 +716,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					failoverClientGone(c)
 					return
 				default: // FailoverExhausted
+					pending.exhaust(reqLog)
 					if fs.LastFailoverErr != nil {
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, platform, streamStarted)
 					} else {
@@ -813,6 +815,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Debug("gateway.account_slot_profit_vetoed", zap.Int64("account_id", account.ID), zap.String("reason", reason))
 				if fs.RecordProfitVeto(account.ID) == FailoverExhausted {
+					pending.exhaust(reqLog)
 					reqLog.Warn("gateway.profit_veto_attempts_exhausted", zap.Int("profit_veto_count", fs.ProfitVetoCount()))
 					markOpsRoutingCapacityLimited(c)
 					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", profitVetoExhaustedMessage, streamStarted)
@@ -1055,11 +1058,10 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					pending.remember(failoverErr, submitForwardUsage)
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
 					if c.Writer.Size() != writerSizeBeforeForward {
-						h.recordExhaustedFailoverPartialUsage(failoverErr, func(r *service.ForwardResult) {
-							submitForwardUsage(r)
-						}, reqLog)
+						pending.exhaust(reqLog)
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
@@ -1073,9 +1075,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					case FailoverExhausted:
 						// 重试全部耗尽：若各次尝试中上游已计量 usage，按账号开关补记，
 						// 否则该账号的上游成本在账单上完全不可见。
-						h.recordExhaustedFailoverPartialUsage(fs.LastFailoverErr, func(r *service.ForwardResult) {
-							submitForwardUsage(r)
-						}, reqLog)
+						pending.exhaust(reqLog)
 						h.handleFailoverExhausted(c, fs.LastFailoverErr, account.Platform, streamStarted)
 						return
 					case FailoverCanceled:
@@ -1924,28 +1924,29 @@ func (h *GatewayHandler) handleConcurrencyError(c *gin.Context, err error, slotT
 	h.handleStreamingAwareErrorWithCode(c, status, errType, code, message, streamStarted)
 }
 
-// recordExhaustedFailoverPartialUsage 在 failover 重试全部耗尽时，补记本次请求中
-// 上游已计量的 usage（记录在 UpstreamFailoverError.PartialResult 上）。
-//
-// 为什么不总是记：PartialResult 只在账号开启 accounts.extra.record_failed_stream_usage
-// 时才被填充。重试成功的请求仍需按成功结果计费一次，故 partial 数据不会参与成功路径；
-// 只有"所有尝试都失败"这一情形才会走到这里，此时上游已按 token 计费但没有成功结果可记。
-func (h *GatewayHandler) recordExhaustedFailoverPartialUsage(
-	failoverErr *service.UpstreamFailoverError,
-	submit func(*service.ForwardResult),
-	reqLog *zap.Logger,
-) {
-	if failoverErr == nil || failoverErr.PartialResult == nil {
+// Keep at most one metered attempt per logical request. Capture the originating
+// account's submission function when the attempt fails, not on the next selection.
+// Success/cancellation never drains the pending usage.
+type pendingFailedStreamUsage struct {
+	result *service.ForwardResult
+	submit func(*service.ForwardResult)
+}
+
+func (p *pendingFailedStreamUsage) remember(e *service.UpstreamFailoverError, submit func(*service.ForwardResult)) {
+	if e != nil && e.PartialResult != nil {
+		p.result, p.submit = e.PartialResult, submit
+	}
+}
+
+func (p *pendingFailedStreamUsage) exhaust(log *zap.Logger) {
+	r, submit := p.result, p.submit
+	*p = pendingFailedStreamUsage{}
+	if r == nil || submit == nil {
 		return
 	}
-	submit(failoverErr.PartialResult)
-	if reqLog != nil {
-		reqLog.Warn("gateway.failed_stream_usage_recorded",
-			zap.Int("input_tokens", failoverErr.PartialResult.Usage.InputTokens),
-			zap.Int("output_tokens", failoverErr.PartialResult.Usage.OutputTokens),
-			zap.Int("cache_read_tokens", failoverErr.PartialResult.Usage.CacheReadInputTokens),
-			zap.Int("cache_creation_tokens", failoverErr.PartialResult.Usage.CacheCreationInputTokens),
-		)
+	submit(r)
+	if log != nil {
+		log.Warn("gateway.failed_stream_usage_submitted", zap.Int("input_tokens", r.Usage.InputTokens), zap.Int("output_tokens", r.Usage.OutputTokens), zap.Int("cache_read_tokens", r.Usage.CacheReadInputTokens), zap.Int("cache_creation_tokens", r.Usage.CacheCreationInputTokens))
 	}
 }
 

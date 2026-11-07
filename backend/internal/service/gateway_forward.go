@@ -823,7 +823,11 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		if err != nil {
 			var sseErr *sseStreamErrorEventError
 			if errors.As(err, &sseErr) {
-				return nil, s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, reqModel, c.Writer.Size() != writerSizeBeforeStream)
+				failoverErr := s.sseStreamErrorEventFailover(ctx, c, account, resp, sseErr.RawData, reqModel, c.Writer.Size() != writerSizeBeforeStream)
+				if account.ShouldRecordFailedStreamUsage() {
+					failoverErr.PartialResult = observedStreamUsage(c, resp, streamResult, originalModel, mappedModel, startTime)
+				}
+				return nil, failoverErr
 			}
 			// 流中断（缺失 terminal 事件、读错误、数据间隔超时等）时保留已观测到的
 			// usage 与错误一起返回，handler 在错误处理完成后照常提交 usage 记录。
