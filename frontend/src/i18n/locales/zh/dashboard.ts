@@ -809,6 +809,26 @@ export default {
     pleaseEnterCode: '请输入兑换码'
   },
 
+  emailReminders: {
+    title: '邮件提醒',
+    description: '管理余额提醒阈值与收件邮箱',
+    introTitle: '在余额用尽前，提前收到提醒',
+    introDescription: '设置提醒金额，添加并验证收件邮箱，让下一次使用更安心。',
+    statusLabel: '当前提醒状态',
+    statusReady: '已配置',
+    statusReadyHint: '余额首次跌破提醒线时，将向已验证且启用的邮箱发送提醒。',
+    statusNeedsEmail: '待验证邮箱',
+    statusNeedsEmailHint: '提醒开关已开启，请在下方添加并验证至少一个收件邮箱。',
+    statusNeedsThreshold: '待设置提醒金额',
+    statusNeedsThresholdHint: '请设置大于 0 的提醒金额，以便在余额跌破提醒线时收到邮件。',
+    statusPaused: '已关闭',
+    statusPausedHint: '打开下方余额提醒开关，恢复接收提醒邮件。',
+    unavailableTitle: '余额邮件提醒暂未开放',
+    unavailableDescription: '站点尚未开启此功能。已有的邮箱和提醒设置会保留。',
+    loadFailed: '暂时无法加载邮件提醒设置，请重试。',
+    retry: '重新加载'
+  },
+
   // Profile
   profile: {
     title: '个人设置',

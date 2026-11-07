@@ -277,6 +277,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/email-reminders',
+    name: 'EmailReminders',
+    component: () => import('@/views/user/EmailRemindersView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Email Reminders',
+      titleKey: 'emailReminders.title',
+      descriptionKey: 'emailReminders.description'
+    }
+  },
+  {
     path: '/profile',
     name: 'Profile',
     component: () => import('@/views/user/ProfileView.vue'),

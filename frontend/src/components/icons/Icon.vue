@@ -112,6 +112,8 @@ const icons = {
   cube: 'M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4',
 
   // Notification
+  // Envelope with a notification bell, drawn for the email reminders entry.
+  emailReminder: 'M12.5 5.5H5A2 2 0 003 7.5v10A2 2 0 005 19.5h14a2 2 0 002-2v-4M3.5 7l7.4 5.3a2 2 0 002.2 0l2-1.4M16 8V6a2.5 2.5 0 015 0v2l1 1.5h-7L16 8zm1.5 3.5a1 1 0 002 0',
   bell: 'M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9',
 
   // Misc

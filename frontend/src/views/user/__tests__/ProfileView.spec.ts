@@ -62,7 +62,7 @@ describe('ProfileView', () => {
     }
     fetchPublicSettingsMock.mockResolvedValue({
       contact_info: '',
-      balance_low_notify_enabled: false,
+      balance_low_notify_enabled: true,
       balance_low_notify_threshold: 0,
       linuxdo_oauth_enabled: true,
       wechat_oauth_enabled: true,
@@ -91,6 +91,7 @@ describe('ProfileView', () => {
     await flushPromises()
 
     expect(wrapper.findAll('.stat-card')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="profile-balance-notify-card"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="profile-shell"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="profile-shell"]').html()).toContain('profile-info-card')
     expect(wrapper.get('[data-testid="profile-shell"]').html()).toContain('profile-password-form')

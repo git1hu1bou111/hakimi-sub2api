@@ -805,6 +805,26 @@ export default {
     pleaseEnterCode: 'Please enter a redeem code'
   },
 
+  emailReminders: {
+    title: 'Email Reminders',
+    description: 'Manage your balance alert threshold and recipient emails',
+    introTitle: 'Get a reminder before your balance runs out',
+    introDescription: 'Choose an alert amount, then add and verify a recipient email to keep using your account with confidence.',
+    statusLabel: 'Reminder status',
+    statusReady: 'Configured',
+    statusReadyHint: 'An email is sent to verified, enabled recipients when your balance first drops below the alert threshold.',
+    statusNeedsEmail: 'Verify an email',
+    statusNeedsEmailHint: 'Reminders are switched on. Add and verify at least one recipient email below.',
+    statusNeedsThreshold: 'Set an alert amount',
+    statusNeedsThresholdHint: 'Choose an amount greater than 0 to receive an email when your balance drops below it.',
+    statusPaused: 'Off',
+    statusPausedHint: 'Switch on balance reminders below to receive alerts again.',
+    unavailableTitle: 'Balance email reminders are not available yet',
+    unavailableDescription: 'This site has not enabled this feature. Your existing emails and reminder settings are preserved.',
+    loadFailed: 'Unable to load email reminder settings. Please try again.',
+    retry: 'Reload'
+  },
+
   // Profile
   profile: {
     title: 'Profile Settings',
