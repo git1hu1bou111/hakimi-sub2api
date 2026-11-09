@@ -59,6 +59,9 @@ func jwtAuth(
 
 		// 验证token
 		claims, err := authService.ValidateToken(tokenString)
+		if err != nil && strings.HasPrefix(tokenString, "rt_") && panelRefreshReadAllowed(c.Request.Method, c.FullPath()) {
+			claims, err = authService.ValidatePanelRefreshToken(c.Request.Context(), tokenString)
+		}
 		if err != nil {
 			if errors.Is(err, service.ErrTokenExpired) {
 				AbortWithError(c, 401, "TOKEN_EXPIRED", "Token has expired")
@@ -110,6 +113,26 @@ func jwtAuth(
 
 		c.Next()
 	}
+}
+
+// Keep direct RT compatibility limited to account data reads. It must never
+// authorize key management, password changes, transfers, or admin routes.
+func panelRefreshReadAllowed(method, path string) bool {
+	if method == "POST" {
+		return path == "/api/v1/usage/dashboard/api-keys-usage"
+	}
+	if method != "GET" {
+		return false
+	}
+	switch path {
+	case "/api/v1/auth/me", "/api/v1/user/profile", "/api/v1/user/platform-quotas",
+		"/api/v1/usage", "/api/v1/usage/stats", "/api/v1/usage/dashboard/stats",
+		"/api/v1/usage/dashboard/trend", "/api/v1/usage/dashboard/models",
+		"/api/v1/usage/dashboard/snapshot-v2", "/api/v1/groups/available", "/api/v1/groups/rates",
+		"/api/v1/subscriptions", "/api/v1/subscriptions/active", "/api/v1/subscriptions/progress", "/api/v1/subscriptions/summary":
+		return true
+	}
+	return false
 }
 
 // Deprecated: prefer GetAuthSubjectFromContext in auth_subject.go.

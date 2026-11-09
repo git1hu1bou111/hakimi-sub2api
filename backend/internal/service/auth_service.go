@@ -1418,6 +1418,10 @@ func (s *AuthService) GenerateToken(ctx context.Context, user *User) (string, er
 
 // generateAccessToken 生成带会话 ID 与绑定指纹的 access token。
 func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash string) (string, error) {
+	return s.generateAccessTokenWithDeadline(user, sessionID, bindingHash, time.Time{})
+}
+
+func (s *AuthService) generateAccessTokenWithDeadline(user *User, sessionID, bindingHash string, deadline time.Time) (string, error) {
 	now := time.Now()
 	var expiresAt time.Time
 	if s.cfg.JWT.AccessTokenExpireMinutes > 0 {
@@ -1425,6 +1429,10 @@ func (s *AuthService) generateAccessToken(user *User, sessionID, bindingHash str
 	} else {
 		// 向后兼容：使用旧的expire_hour配置
 		expiresAt = now.Add(time.Duration(s.cfg.JWT.ExpireHour) * time.Hour)
+	}
+
+	if !deadline.IsZero() && deadline.Before(expiresAt) {
+		expiresAt = deadline
 	}
 
 	claims := &JWTClaims{
@@ -1744,6 +1752,9 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 
 	now := time.Now()
 	ttl := time.Duration(s.cfg.JWT.RefreshTokenExpireDays) * 24 * time.Hour
+	if s.panelCompatEnabled(user.ID) {
+		ttl = panelCompatLifetime
+	}
 
 	data := &RefreshTokenData{
 		UserID:       user.ID,
@@ -1842,6 +1853,13 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 			logger.LegacyPrintf("service.auth", "[Auth] Session binding mismatch on refresh for user %d, family revoked", data.UserID)
 			return nil, ErrSessionBindingMismatch
 		}
+	}
+
+	// External dashboards opted in by the operator may retain the same RT.
+	// Its original deadline never slides, and account/password checks above
+	// remain identical to normal refresh. Other users still rotate tokens.
+	if s.panelCompatEnabled(user.ID) {
+		return s.refreshPanelTokenPair(user, data, refreshToken)
 	}
 
 	// Token轮转：立即使旧Token失效
