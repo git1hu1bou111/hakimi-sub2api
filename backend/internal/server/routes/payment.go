@@ -44,6 +44,7 @@ func RegisterPaymentRoutes(
 	authenticated.Use(panelRateLimiter.Global())
 	{
 		authenticated.GET("/config", paymentHandler.GetPaymentConfig)
+		authenticated.POST("/usdt-quote", paymentHandler.GetUSDTQuote)
 		authenticated.GET("/checkout-info", paymentHandler.GetCheckoutInfo)
 		authenticated.GET("/plans", paymentHandler.GetPlans)
 		authenticated.GET("/limits", paymentHandler.GetLimits)

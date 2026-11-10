@@ -69,6 +69,8 @@ func generateRandomString(n int) string {
 }
 
 type CreateOrderRequest struct {
+	USDTQuoteToken  string
+	usdtQuote       *USDTRechargeQuote
 	UserID          int64
 	Amount          float64
 	PaymentType     string

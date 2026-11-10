@@ -1,0 +1,7 @@
+Network logo SVGs from Cryptocurrency Icons (CC0-1.0):
+https://github.com/spothq/cryptocurrency-icons
+bnb-chain.svg: svg/color/bnb.svg
+ethereum.svg: svg/color/eth.svg
+tron.svg: svg/color/trx.svg
+polygon.svg: svg/color/matic.svg
+Original logo colours and paths retained. Brand names and trademarks remain the property of their respective owners.

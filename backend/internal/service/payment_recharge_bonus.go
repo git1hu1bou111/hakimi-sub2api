@@ -328,7 +328,7 @@ func paymentOrderAmountWithoutBonus(o *dbent.PaymentOrder) float64 {
 	}
 	base := decimal.NewFromFloat(o.Amount).
 		Sub(decimal.NewFromFloat(o.BonusAmount)).
-		Round(2).
+		Round(8).
 		InexactFloat64()
 	if base < 0 {
 		return 0

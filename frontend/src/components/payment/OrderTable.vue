@@ -14,14 +14,15 @@
     </template>
     <template #cell-pay_amount="{ value, row }">
       <div class="text-sm">
-        <span class="font-medium text-gray-900 dark:text-white">{{ paymentAmountSymbol(row) }}{{ value.toFixed(2) }}</span>
+        <span class="font-medium text-gray-900 dark:text-white">{{ row.usdt_quote ? row.usdt_quote.amount + ' USDT' : paymentAmountSymbol(row) + value.toFixed(2) }}</span>
         <span v-if="row.fee_rate > 0" class="ml-1 text-xs text-gray-400" :title="t('payment.orders.fee') + ': ' + row.fee_rate + '%'">
           ({{ t('payment.orders.fee') }} {{ row.fee_rate }}%)
         </span>
+        <div v-if="row.usdt_quote" class="text-xs text-gray-500">1 USDT = {{ row.usdt_quote.rate }} CNY · {{ row.usdt_quote.source }}</div>
         <div v-if="row.amount !== row.pay_amount || (row.bonus_amount ?? 0) > 0" class="text-xs text-gray-500">
-          {{ t('payment.orders.creditedAmount') }}: {{ creditedAmountSymbol }}{{ row.amount.toFixed(2) }}
+          {{ t('payment.orders.creditedAmount') }}: {{ creditedAmountSymbol }}{{ row.usdt_quote?.total_credit || row.amount.toFixed(2) }}
           <span v-if="(row.bonus_amount ?? 0) > 0" class="ml-1 text-amber-600 dark:text-amber-400">
-            ({{ t('payment.orders.bonusIncluded', { amount: creditedAmountSymbol + (row.bonus_amount ?? 0).toFixed(2) }) }})
+            ({{ t('payment.orders.bonusIncluded', { amount: creditedAmountSymbol + (row.usdt_quote?.bonus_credit || (row.bonus_amount ?? 0).toFixed(2)) }) }})
           </span>
         </div>
       </div>

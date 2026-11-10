@@ -61,10 +61,22 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 			return nil, err
 		}
 	}
+	if req.USDTQuoteToken != "" {
+		req.usdtQuote, err = s.parseUSDTQuote(req, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		if feeRate != 0 {
+			return nil, infraerrors.BadRequest("USDT_FEE_CONFLICT", "USDT 充值手续费配置需要检查")
+		}
+	}
 	orderAmount := req.Amount
 	limitAmount := req.Amount
 	bonusAmount := 0.0
-	if plan != nil {
+	if req.usdtQuote != nil {
+		orderAmount, _ = strconv.ParseFloat(req.usdtQuote.TotalCredit, 64)
+		bonusAmount, _ = strconv.ParseFloat(req.usdtQuote.BonusCredit, 64)
+	} else if plan != nil {
 		orderAmount = plan.Price
 		limitAmount = plan.Price
 	} else if req.OrderType == payment.OrderTypeBalance {
@@ -84,6 +96,10 @@ func (s *PaymentService) CreateOrder(ctx context.Context, req CreateOrderRequest
 	}
 	if err := s.validateSelectedCreateOrderInstance(ctx, req, sel); err != nil {
 		return nil, err
+	}
+	selectedUSDT := sel != nil && isUSDTRechargeProvider(sel.ProviderKey, sel.Config)
+	if selectedUSDT != (req.usdtQuote != nil) || (selectedUSDT && req.OrderType != payment.OrderTypeBalance) {
+		return nil, infraerrors.BadRequest("USDT_QUOTE_REQUIRED", "请刷新充值页面并获取 USDT 报价")
 	}
 	selectedCurrency := payment.DefaultPaymentCurrency
 	if sel != nil {
@@ -168,7 +184,11 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 	if err := s.checkPendingLimit(ctx, tx, req.UserID, cfg.MaxPendingOrders); err != nil {
 		return nil, err
 	}
-	if err := s.checkDailyLimit(ctx, tx, req.UserID, limitAmount, cfg.DailyLimit); err != nil {
+	dailyAmount := limitAmount
+	if req.usdtQuote != nil {
+		dailyAmount, _ = strconv.ParseFloat(req.usdtQuote.BaseCredit, 64)
+	}
+	if err := s.checkDailyLimit(ctx, tx, req.UserID, dailyAmount, cfg.DailyLimit); err != nil {
 		return nil, err
 	}
 	tm := cfg.OrderTimeoutMin
@@ -272,6 +292,9 @@ func buildPaymentOrderProviderSnapshot(sel *payment.InstanceSelection, req Creat
 
 	snapshot := map[string]any{}
 	snapshot["schema_version"] = 2
+	if req.usdtQuote != nil {
+		snapshot["usdt_quote"] = *req.usdtQuote
+	}
 
 	instanceID := strings.TrimSpace(sel.InstanceID)
 	if instanceID != "" {
@@ -306,6 +329,7 @@ func buildPaymentOrderProviderSnapshot(sel *payment.InstanceSelection, req Creat
 		if merchantID := strings.TrimSpace(sel.Config["pid"]); merchantID != "" {
 			snapshot["merchant_id"] = merchantID
 		}
+		snapshot["currency"] = paymentProviderConfigCurrency(providerKey, sel.Config)
 	}
 	if providerKey == payment.TypeStripe {
 		snapshot["currency"] = paymentProviderConfigCurrency(providerKey, sel.Config)
@@ -344,6 +368,10 @@ func (s *PaymentService) checkDailyLimit(ctx context.Context, tx *dbent.Tx, user
 	}
 	var used float64
 	for _, o := range orders {
+		if PaymentOrderUSDTQuote(o) != nil {
+			used += paymentOrderAmountWithoutBonus(o)
+			continue
+		}
 		if o.OrderType == payment.OrderTypeBalance {
 			used += o.PayAmount
 			continue
@@ -457,6 +485,9 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 		IsMobile:    req.IsMobile,
 		ReturnURL:   providerReturnURL,
 	}, sel, outTradeNo, payAmountStr, subject)
+	if req.usdtQuote != nil {
+		providerReq.CryptoRate = "1"
+	}
 	providerReq.AlipayMobilePrecreate = shouldUseAlipayMobilePrecreate(req, cfg, sel)
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")
 	pr, err := prov.CreatePayment(ctx, providerReq)

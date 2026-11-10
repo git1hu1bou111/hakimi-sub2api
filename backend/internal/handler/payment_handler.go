@@ -234,6 +234,7 @@ func (h *PaymentHandler) GetLimits(c *gin.Context) {
 
 // CreateOrderRequest is the request body for creating a payment order.
 type CreateOrderRequest struct {
+	USDTQuoteToken    string  `json:"usdt_quote_token"`
 	Amount            float64 `json:"amount"`
 	PaymentType       string  `json:"payment_type" binding:"required"`
 	OpenID            string  `json:"openid"`
@@ -278,6 +279,7 @@ func (h *PaymentHandler) CreateOrder(c *gin.Context) {
 		mobile = *req.IsMobile
 	}
 	result, err := h.paymentService.CreateOrder(c.Request.Context(), service.CreateOrderRequest{
+		USDTQuoteToken:  req.USDTQuoteToken,
 		UserID:          subject.UserID,
 		Amount:          req.Amount,
 		PaymentType:     req.PaymentType,
@@ -484,26 +486,27 @@ func (h *PaymentHandler) VerifyOrder(c *gin.Context) {
 // proves possession of the checkout session, so the result keeps the legacy
 // frontend contract needed by payment result pages.
 type PublicOrderResult struct {
-	ID                  int64      `json:"id"`
-	OutTradeNo          string     `json:"out_trade_no"`
-	Amount              float64    `json:"amount"`
-	PayAmount           float64    `json:"pay_amount"`
-	FeeRate             float64    `json:"fee_rate"`
-	BonusAmount         float64    `json:"bonus_amount"`
-	Currency            string     `json:"currency"`
-	PaymentType         string     `json:"payment_type"`
-	OrderType           string     `json:"order_type"`
-	Status              string     `json:"status"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExpiresAt           time.Time  `json:"expires_at"`
-	PaidAt              *time.Time `json:"paid_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	RefundAmount        float64    `json:"refund_amount"`
-	RefundReason        *string    `json:"refund_reason,omitempty"`
-	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
-	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
-	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
-	PlanID              *int64     `json:"plan_id,omitempty"`
+	USDTQuote           *service.USDTRechargeQuote `json:"usdt_quote,omitempty"`
+	ID                  int64                      `json:"id"`
+	OutTradeNo          string                     `json:"out_trade_no"`
+	Amount              float64                    `json:"amount"`
+	PayAmount           float64                    `json:"pay_amount"`
+	FeeRate             float64                    `json:"fee_rate"`
+	BonusAmount         float64                    `json:"bonus_amount"`
+	Currency            string                     `json:"currency"`
+	PaymentType         string                     `json:"payment_type"`
+	OrderType           string                     `json:"order_type"`
+	Status              string                     `json:"status"`
+	CreatedAt           time.Time                  `json:"created_at"`
+	ExpiresAt           time.Time                  `json:"expires_at"`
+	PaidAt              *time.Time                 `json:"paid_at,omitempty"`
+	CompletedAt         *time.Time                 `json:"completed_at,omitempty"`
+	RefundAmount        float64                    `json:"refund_amount"`
+	RefundReason        *string                    `json:"refund_reason,omitempty"`
+	RefundRequestedAt   *time.Time                 `json:"refund_requested_at,omitempty"`
+	RefundRequestedBy   *string                    `json:"refund_requested_by,omitempty"`
+	RefundRequestReason *string                    `json:"refund_request_reason,omitempty"`
+	PlanID              *int64                     `json:"plan_id,omitempty"`
 }
 
 // PublicOrderVerifyResult is returned by the legacy anonymous out_trade_no
@@ -520,6 +523,7 @@ type PublicOrderVerifyResult struct {
 
 func buildPublicOrderResult(order *dbent.PaymentOrder) PublicOrderResult {
 	return PublicOrderResult{
+		USDTQuote:           service.PaymentOrderUSDTQuote(order),
 		ID:                  order.ID,
 		OutTradeNo:          order.OutTradeNo,
 		Amount:              order.Amount,
@@ -637,28 +641,29 @@ func isMobile(c *gin.Context) bool {
 }
 
 type PaymentOrderResult struct {
-	ID                  int64      `json:"id"`
-	UserID              int64      `json:"user_id"`
-	Amount              float64    `json:"amount"`
-	PayAmount           float64    `json:"pay_amount"`
-	FeeRate             float64    `json:"fee_rate"`
-	BonusAmount         float64    `json:"bonus_amount"`
-	Currency            string     `json:"currency"`
-	PaymentType         string     `json:"payment_type"`
-	OutTradeNo          string     `json:"out_trade_no"`
-	Status              string     `json:"status"`
-	OrderType           string     `json:"order_type"`
-	CreatedAt           time.Time  `json:"created_at"`
-	ExpiresAt           time.Time  `json:"expires_at"`
-	PaidAt              *time.Time `json:"paid_at,omitempty"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
-	RefundAmount        float64    `json:"refund_amount"`
-	RefundReason        *string    `json:"refund_reason,omitempty"`
-	RefundRequestedAt   *time.Time `json:"refund_requested_at,omitempty"`
-	RefundRequestedBy   *string    `json:"refund_requested_by,omitempty"`
-	RefundRequestReason *string    `json:"refund_request_reason,omitempty"`
-	PlanID              *int64     `json:"plan_id,omitempty"`
-	ProviderInstanceID  *string    `json:"provider_instance_id,omitempty"`
+	USDTQuote           *service.USDTRechargeQuote `json:"usdt_quote,omitempty"`
+	ID                  int64                      `json:"id"`
+	UserID              int64                      `json:"user_id"`
+	Amount              float64                    `json:"amount"`
+	PayAmount           float64                    `json:"pay_amount"`
+	FeeRate             float64                    `json:"fee_rate"`
+	BonusAmount         float64                    `json:"bonus_amount"`
+	Currency            string                     `json:"currency"`
+	PaymentType         string                     `json:"payment_type"`
+	OutTradeNo          string                     `json:"out_trade_no"`
+	Status              string                     `json:"status"`
+	OrderType           string                     `json:"order_type"`
+	CreatedAt           time.Time                  `json:"created_at"`
+	ExpiresAt           time.Time                  `json:"expires_at"`
+	PaidAt              *time.Time                 `json:"paid_at,omitempty"`
+	CompletedAt         *time.Time                 `json:"completed_at,omitempty"`
+	RefundAmount        float64                    `json:"refund_amount"`
+	RefundReason        *string                    `json:"refund_reason,omitempty"`
+	RefundRequestedAt   *time.Time                 `json:"refund_requested_at,omitempty"`
+	RefundRequestedBy   *string                    `json:"refund_requested_by,omitempty"`
+	RefundRequestReason *string                    `json:"refund_request_reason,omitempty"`
+	PlanID              *int64                     `json:"plan_id,omitempty"`
+	ProviderInstanceID  *string                    `json:"provider_instance_id,omitempty"`
 }
 
 func sanitizePaymentOrdersForResponse(orders []*dbent.PaymentOrder) []PaymentOrderResult {
@@ -676,6 +681,7 @@ func sanitizePaymentOrderForResponse(order *dbent.PaymentOrder) *PaymentOrderRes
 		return nil
 	}
 	return &PaymentOrderResult{
+		USDTQuote:           service.PaymentOrderUSDTQuote(order),
 		ID:                  order.ID,
 		UserID:              order.UserID,
 		Amount:              order.Amount,
@@ -703,4 +709,26 @@ func sanitizePaymentOrderForResponse(order *dbent.PaymentOrder) *PaymentOrderRes
 
 func isWeChatBrowser(c *gin.Context) bool {
 	return strings.Contains(strings.ToLower(c.GetHeader("User-Agent")), "micromessenger")
+}
+
+// GetUSDTQuote provides a short-lived, signed, user-bound exchange quote.
+func (h *PaymentHandler) GetUSDTQuote(c *gin.Context) {
+	subject, ok := requireAuth(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Amount      float64 `json:"amount"`
+		PaymentType string  `json:"payment_type" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid quote request")
+		return
+	}
+	quote, err := h.paymentService.GetUSDTQuote(c.Request.Context(), subject.UserID, req.Amount, req.PaymentType)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, quote)
 }

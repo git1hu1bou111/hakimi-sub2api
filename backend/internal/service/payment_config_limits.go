@@ -34,6 +34,11 @@ func (s *PaymentConfigService) GetAvailableMethodLimits(ctx context.Context) (*M
 		ml := pcAggregateMethodLimits(pt, insts)
 		ml.DisplayName = s.pcAggregateMethodDisplayName(pt, insts)
 		ml.Currency = currency
+		mode, compatible := s.pcUSDTMethod(insts)
+		if !compatible {
+			continue
+		}
+		ml.USDTRecharge = mode
 		resp.Methods[ml.PaymentType] = ml
 	}
 	resp.GlobalMin, resp.GlobalMax = pcComputeGlobalRange(resp.Methods)
@@ -97,6 +102,11 @@ func (s *PaymentConfigService) GetMethodLimits(ctx context.Context, types []stri
 		ml := pcAggregateMethodLimits(pt, matching)
 		ml.DisplayName = s.pcAggregateMethodDisplayName(pt, matching)
 		ml.Currency = currency
+		mode, compatible := s.pcUSDTMethod(matching)
+		if !compatible {
+			continue
+		}
+		ml.USDTRecharge = mode
 		result = append(result, ml)
 	}
 	return result, nil

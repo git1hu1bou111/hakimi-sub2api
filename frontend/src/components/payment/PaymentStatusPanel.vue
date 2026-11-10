@@ -23,9 +23,9 @@
               <div class="flex justify-between">
                 <span class="text-gray-500 dark:text-gray-400">{{ t('payment.orders.amount') }}</span>
                 <span class="font-medium text-gray-900 dark:text-white">
-                  {{ creditedAmountSymbol }}{{ paidOrder.amount.toFixed(2) }}
+                  {{ creditedAmountSymbol }}{{ paidOrder.usdt_quote?.total_credit || paidOrder.amount.toFixed(2) }}
                   <span v-if="(paidOrder.bonus_amount ?? 0) > 0" class="ml-1 text-xs font-normal text-amber-600 dark:text-amber-400">
-                    ({{ t('payment.orders.bonusIncluded', { amount: creditedAmountSymbol + (paidOrder.bonus_amount ?? 0).toFixed(2) }) }})
+                    ({{ t('payment.orders.bonusIncluded', { amount: creditedAmountSymbol + (paidOrder.usdt_quote?.bonus_credit || (paidOrder.bonus_amount ?? 0).toFixed(2)) }) }})
                   </span>
                 </span>
               </div>
@@ -344,6 +344,7 @@ const displayPaymentAmount = computed(() => formatGatewayAmount(props.payAmount 
 const displayOrderNumber = computed(() => props.outTradeNo || `#${props.orderId}`)
 
 function formatGatewayAmount(value: number, currency?: string | null): string {
+  if (paidOrder.value?.usdt_quote || (props.paymentType.startsWith('usdt_') && paymentCurrency.value === 'USD')) return `${value.toFixed(2)} USDT`
   return formatPaymentAmount(value, currency || paymentCurrency.value, localeCode.value)
 }
 

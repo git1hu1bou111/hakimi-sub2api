@@ -84,6 +84,7 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
           template: '<div><slot /><slot name="footer" /></div>',
         },
         Select: {
+          name: 'Select',
           props: ['modelValue', 'options', 'disabled'],
           template: '<div />',
         },
@@ -96,6 +97,30 @@ function mountDialog(options: { editing?: ProviderInstance | null } = {}) {
 }
 
 describe('PaymentProviderDialog callback URLs', () => {
+  it('saves USD for an EasyPay crypto gateway alongside its network mapping', async () => {
+    const provider = providerFactory({
+      provider_key: 'easypay', name: 'USDT', payment_mode: 'popup',
+      config: { pid: 'merchant', apiBase: 'https://pay.example.com', currency: 'CNY',
+        customMethods: '[{"type":"usdt_trc20","upstreamType":"usdt.trc20","displayName":"USDT-TRC20"}]' },
+      supported_types: ['usdt_trc20'],
+    })
+    const wrapper = mountDialog({ editing: provider })
+    ;(wrapper.vm as unknown as { loadProvider: (provider: ProviderInstance) => void }).loadProvider(provider)
+    await nextTick()
+    const currencySelect = wrapper.findAllComponents({ name: 'Select' }).find(select => {
+      const options = select.props('options') as Array<{ value: string }>
+      return options?.some(option => option.value === 'USD')
+    })
+    expect(currencySelect).toBeDefined()
+    currencySelect!.vm.$emit('update:modelValue', 'USD')
+    await nextTick()
+    await wrapper.find('form').trigger('submit.prevent')
+    const payload = wrapper.emitted('save')?.[0]?.[0] as { config: Record<string, string>; supported_types: string[] }
+    expect(payload.config.currency).toBe('USD')
+    expect(payload.supported_types).toContain('usdt_trc20')
+    expect(JSON.parse(payload.config.customMethods)[0].upstreamType).toBe('usdt.trc20')
+  })
+
   it.each([
     ['https://notify.example.com/', 'https://return.example.com///', 'https://notify.example.com', 'https://return.example.com'],
     [' https://notify.example.com/sub/ ', ' https://return.example.com/site/ ', 'https://notify.example.com/sub', 'https://return.example.com/site'],

@@ -6,6 +6,7 @@
 import { apiClient } from './client'
 import type {
   PaymentConfig,
+  UsdtRechargeQuote,
   SubscriptionPlan,
   MethodLimitsResponse,
   CheckoutInfoResponse,
@@ -26,6 +27,9 @@ export interface PublicOrderVerifyResult {
 export type PaymentReturnParams = Record<string, string>
 
 export const paymentAPI = {
+  getUsdtQuote(data: { amount: number; payment_type: string }) {
+    return apiClient.post<UsdtRechargeQuote>('/payment/usdt-quote', data)
+  },
   /** Get payment configuration (enabled types, limits, etc.) */
   getConfig() {
     return apiClient.get<PaymentConfig>('/payment/config')

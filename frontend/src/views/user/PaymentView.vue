@@ -50,6 +50,7 @@
             <div v-if="enabledMethods.length === 0" class="card py-16 text-center">
               <p class="text-gray-500 dark:text-gray-400">{{ t('payment.notAvailable') }}</p>
             </div>
+            <UsdtRechargeForm v-else-if="hasUsdtRecharge" :methods="usdtMethods" :busy="submitting" @submit="submitUsdtRecharge" />
             <template v-else>
             <div class="card p-6">
               <!-- 充值赠送活动文案（后台 Markdown 配置，空则不渲染） -->
@@ -299,6 +300,7 @@ import { hasPeakRate, formatPeakRateWindow, serverTimezoneLabel, type PeakRateFi
 import type { SubscriptionPlan, CheckoutInfoResponse, CreateOrderResult, OrderType } from '@/types/payment'
 import { formatRechargeBonusNumber, normalizeRechargeBonusMode, normalizeRechargeBonusTiers, quoteRechargeBonus } from '@/utils/rechargeBonus'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import UsdtRechargeForm from '@/components/payment/UsdtRechargeForm.vue'
 import AmountInput from '@/components/payment/AmountInput.vue'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector.vue'
 import { METHOD_ORDER, getPaymentPopupFeatures, isBuiltInAlipayMethod, isBuiltInWxpayMethod } from '@/components/payment/providerConfig'
@@ -361,6 +363,7 @@ const previewImage = ref('')
 const paymentPhase = ref<'select' | 'paying'>('select')
 
 interface CreateOrderOptions {
+  usdtQuoteToken?: string
   openid?: string
   wechatResumeToken?: string
   paymentType?: string
@@ -552,6 +555,10 @@ async function onPaymentRestart() {
 
   try {
     const current = paymentState.value
+    if (current.orderType === 'balance' && usdtMethods.value[current.paymentType]) {
+      resetPayment()
+      return
+    }
     const restartType = normalizeVisibleMethod(current.paymentType || selectedMethod.value) || current.paymentType || selectedMethod.value
     const restartOrderType: OrderType = current.orderType === 'subscription' || (!current.orderType && activeTab.value === 'subscription')
       ? 'subscription'
@@ -663,6 +670,13 @@ watch(tabs, (available) => {
 
 const visibleMethods = computed(() => getVisibleMethods(checkout.value.methods))
 const enabledMethods = computed(() => Object.keys(visibleMethods.value))
+const usdtMethods = computed(() => Object.fromEntries(Object.entries(visibleMethods.value).filter(([, method]) => method.usdt_recharge)))
+const hasUsdtRecharge = computed(() => Object.keys(usdtMethods.value).length > 0)
+async function submitUsdtRecharge(value: number, method: string, token: string) {
+  selectedMethod.value = method
+  amount.value = value
+  await createOrder(value, 'balance', undefined, { paymentType: method, usdtQuoteToken: token })
+}
 const validAmount = computed(() => amount.value ?? 0)
 const balanceRechargeMultiplier = computed(() => {
   const multiplier = checkout.value.balance_recharge_multiplier
@@ -945,6 +959,7 @@ async function createOrder(orderAmount: number, orderType: OrderType, planId?: n
       forceQRCode: !!(checkout.value.alipay_force_qrcode && normalizeVisibleMethod(requestType) === 'alipay'),
       mobilePrecreateDeepLink: checkout.value.alipay_mobile_precreate_deep_link === true,
     })
+    if (options.usdtQuoteToken) payload.usdt_quote_token = options.usdtQuoteToken
     if (options.openid) {
       payload.openid = options.openid
     }

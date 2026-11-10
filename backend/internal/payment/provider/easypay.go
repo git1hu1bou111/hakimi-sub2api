@@ -113,6 +113,32 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	for k, v := range config {
 		cfg[k] = v
 	}
+	// Currency is opt-in for EasyPay-compatible gateways supporting `fiat`
+	// (including BEpusdt). Leave legacy requests unchanged when omitted.
+	if rawCurrency := strings.TrimSpace(cfg["currency"]); rawCurrency != "" {
+		currency, err := payment.NormalizePaymentCurrency(rawCurrency)
+		if err != nil {
+			return nil, fmt.Errorf("easypay currency: %w", err)
+		}
+		cfg["currency"] = currency
+	}
+	if cfg["usdtRecharge"] == "true" {
+		if strings.TrimSpace(cfg["upstreamVerifyURL"]) == "" {
+			return nil, fmt.Errorf("USDT recharge requires an upstream order verification URL")
+		}
+		if cfg["currency"] != "USD" {
+			return nil, fmt.Errorf("USDT recharge requires USD fiat")
+		}
+		var methods []easyPayCustomMethod
+		if json.Unmarshal([]byte(cfg["customMethods"]), &methods) != nil || len(methods) == 0 {
+			return nil, fmt.Errorf("USDT recharge requires explicit network mappings")
+		}
+		for _, m := range methods {
+			if !strings.HasPrefix(m.UpstreamType, "usdt.") {
+				return nil, fmt.Errorf("USDT recharge only supports USDT networks")
+			}
+		}
+	}
 	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
 	return &EasyPay{
 		instanceID: instanceID,
@@ -213,6 +239,15 @@ func (e *EasyPay) createRedirectPayment(req payment.CreatePaymentRequest) (*paym
 		"return_url": returnURL, "name": req.Subject,
 		"money": req.Amount,
 	}
+	if currency := e.config["currency"]; currency != "" && currency != payment.DefaultPaymentCurrency {
+		params["fiat"] = currency
+	}
+	if req.CryptoRate != "" {
+		if req.CryptoRate != "1" || e.config["usdtRecharge"] != "true" || e.config["currency"] != "USD" || !strings.HasPrefix(paymentType, "usdt.") {
+			return nil, fmt.Errorf("invalid USDT recharge rate")
+		}
+		params["rate"] = req.CryptoRate
+	}
 	if cid := e.resolveCID(paymentType); cid != "" {
 		params["cid"] = cid
 	}
@@ -239,6 +274,15 @@ func (e *EasyPay) createAPIPayment(ctx context.Context, req payment.CreatePaymen
 		"out_trade_no": req.OrderID, "notify_url": notifyURL,
 		"return_url": returnURL, "name": req.Subject,
 		"money": req.Amount, "clientip": req.ClientIP,
+	}
+	if currency := e.config["currency"]; currency != "" && currency != payment.DefaultPaymentCurrency {
+		params["fiat"] = currency
+	}
+	if req.CryptoRate != "" {
+		if req.CryptoRate != "1" || e.config["usdtRecharge"] != "true" || e.config["currency"] != "USD" || !strings.HasPrefix(paymentType, "usdt.") {
+			return nil, fmt.Errorf("invalid USDT recharge rate")
+		}
+		params["rate"] = req.CryptoRate
 	}
 	if cid := e.resolveCID(paymentType); cid != "" {
 		params["cid"] = cid
@@ -397,6 +441,9 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 func (e *EasyPay) ConfirmNotification(ctx context.Context, n *payment.PaymentNotification) error {
 	if n == nil || n.Status != payment.NotificationStatusSuccess {
 		return nil
+	}
+	if e.config["usdtRecharge"] == "true" {
+		return e.verifyUpstreamOrder(ctx, map[string]string{"trade_no": n.TradeNo, "out_trade_no": n.OrderID, "money": strconv.FormatFloat(n.Amount, 'f', -1, 64)})
 	}
 	result, err := e.QueryOrder(ctx, n.OrderID)
 	if err != nil {
@@ -907,7 +954,13 @@ func (e *EasyPay) VerifyNotification(ctx context.Context, rawBody string, _ map[
 				"param", k, "instance", e.instanceID)
 			return nil, fmt.Errorf("unexpected notify param: %s", k)
 		}
+		if k != "name" && strings.ContainsAny(values.Get(k), "&=") {
+			return nil, fmt.Errorf("invalid notify value: %s", k)
+		}
 		params[k] = values.Get(k)
+	}
+	if strings.TrimSpace(params["pid"]) != strings.TrimSpace(e.config["pid"]) {
+		return nil, fmt.Errorf("invalid merchant pid")
 	}
 	sign := params["sign"]
 	if sign == "" {
@@ -958,6 +1011,9 @@ func (e *EasyPay) notifyExtraParamAllowed(name string) bool {
 // upstreamVerifyMode 读取实例级「入账前向上游查单」策略（config:
 // upstreamVerifyMode，默认 off）。
 func (e *EasyPay) upstreamVerifyMode() string {
+	if e.config["usdtRecharge"] == "true" {
+		return easyPayUpstreamVerifyEnforce
+	}
 	switch strings.ToLower(strings.TrimSpace(e.config["upstreamVerifyMode"])) {
 	case easyPayUpstreamVerifyDryRun:
 		return easyPayUpstreamVerifyDryRun
@@ -988,6 +1044,9 @@ func (e *EasyPay) verifyUpstreamOrder(ctx context.Context, params map[string]str
 	}
 	verifyURL := strings.TrimSpace(e.config["upstreamVerifyURL"])
 	if verifyURL == "" {
+		if mode == easyPayUpstreamVerifyEnforce {
+			return fmt.Errorf("upstream verify URL is required")
+		}
 		return nil
 	}
 
@@ -1038,10 +1097,12 @@ func (e *EasyPay) queryUpstreamOrderReason(ctx context.Context, verifyURL, trade
 		StatusCode int    `json:"status_code"`
 		Message    string `json:"message"`
 		Data       struct {
-			OrderID string `json:"order_id"`
-			TradeID string `json:"trade_id"`
-			Money   string `json:"money"`
-			Status  int    `json:"status"`
+			OrderID   string `json:"order_id"`
+			TradeID   string `json:"trade_id"`
+			Money     string `json:"money"`
+			Status    int    `json:"status"`
+			Fiat      string `json:"fiat"`
+			TradeType string `json:"trade_type"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
@@ -1059,11 +1120,16 @@ func (e *EasyPay) queryUpstreamOrderReason(ctx context.Context, verifyURL, trade
 	if body.Data.Status != easyPayUpstreamStatusPaid {
 		return fmt.Sprintf("order not paid: status=%d", body.Data.Status)
 	}
-	if notifyAmount, err := strconv.ParseFloat(strings.TrimSpace(notifyMoney), 64); err == nil {
-		if upstreamAmount, err := strconv.ParseFloat(strings.TrimSpace(body.Data.Money), 64); err == nil &&
-			math.Abs(notifyAmount-upstreamAmount) > 0.01 {
-			return fmt.Sprintf("amount mismatch: upstream=%.2f notify=%.2f", upstreamAmount, notifyAmount)
-		}
+	if e.config["usdtRecharge"] == "true" && (body.Data.Fiat != "USD" || !strings.HasPrefix(body.Data.TradeType, "usdt.")) {
+		return "USDT order currency mismatch"
+	}
+	notifyAmount, notifyErr := strconv.ParseFloat(strings.TrimSpace(notifyMoney), 64)
+	upstreamAmount, upstreamErr := strconv.ParseFloat(strings.TrimSpace(body.Data.Money), 64)
+	if notifyErr != nil || upstreamErr != nil || math.IsNaN(notifyAmount) || math.IsNaN(upstreamAmount) || math.IsInf(notifyAmount, 0) || math.IsInf(upstreamAmount, 0) || notifyAmount <= 0 || upstreamAmount <= 0 {
+		return "invalid upstream or notification amount"
+	}
+	if math.Abs(notifyAmount-upstreamAmount) > easypayAmountTolerance {
+		return fmt.Sprintf("amount mismatch: upstream=%.8f notify=%.8f", upstreamAmount, notifyAmount)
 	}
 	return ""
 }

@@ -47,7 +47,20 @@ export interface PaymentConfig {
   stripe_publishable_key: string
 }
 
+export interface UsdtRechargeQuote {
+  amount: string
+  rate: string
+  base_credit: string
+  bonus_credit: string
+  total_credit: string
+  source: string
+  quoted_at: string
+  expires_at: string
+  token: string
+}
+
 export interface MethodLimit {
+  usdt_recharge?: boolean
   currency?: string
   display_name?: string
   daily_limit: number
@@ -95,6 +108,7 @@ export interface CheckoutInfoResponse {
 // ==================== Orders ====================
 
 export interface PaymentOrder {
+  usdt_quote?: UsdtRechargeQuote
   id: number
   user_id: number
   amount: number
@@ -181,6 +195,7 @@ export interface ProviderInstance {
 // ==================== Request / Response ====================
 
 export interface CreateOrderRequest {
+  usdt_quote_token?: string
   amount: number
   payment_type: string
   order_type: string

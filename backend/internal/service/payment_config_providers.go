@@ -123,7 +123,7 @@ var providerSensitiveConfigFields = map[string]map[string]struct{}{
 // all provider identity fields that are snapshotted into orders or used by
 // webhook/refund verification.
 var providerPendingOrderProtectedConfigFields = map[string]map[string]struct{}{
-	payment.TypeEasyPay:   {"pkey": {}, "pid": {}, "querysigntype": {}, "queryprivatekey": {}, "querypublickey": {}},
+	payment.TypeEasyPay:   {"pkey": {}, "pid": {}, "querysigntype": {}, "queryprivatekey": {}, "querypublickey": {}, "currency": {}, "usdtrecharge": {}},
 	payment.TypeAlipay:    {"privatekey": {}, "publickey": {}, "alipaypublickey": {}, "appid": {}},
 	payment.TypeWxpay:     {"privatekey": {}, "apiv3key": {}, "publickey": {}, "appid": {}, "mpappid": {}, "mchid": {}, "publickeyid": {}, "certserial": {}},
 	payment.TypeStripe:    {"secretkey": {}, "webhooksecret": {}, "currency": {}},
@@ -145,7 +145,18 @@ func hasPendingOrderProtectedConfigChange(providerKey string, currentConfig, nex
 		return false
 	}
 	for fieldName := range fields {
-		if providerConfigFieldValue(currentConfig, fieldName) != providerConfigFieldValue(nextConfig, fieldName) {
+		currentValue := providerConfigFieldValue(currentConfig, fieldName)
+		nextValue := providerConfigFieldValue(nextConfig, fieldName)
+		if fieldName == "currency" {
+			// An omitted currency already means CNY. Saving that default or
+			// changing its casing must not invalidate pending orders.
+			currentCurrency, currentErr := payment.NormalizePaymentCurrency(currentValue)
+			nextCurrency, nextErr := payment.NormalizePaymentCurrency(nextValue)
+			if currentErr == nil && nextErr == nil {
+				currentValue, nextValue = currentCurrency, nextCurrency
+			}
+		}
+		if currentValue != nextValue {
 			return true
 		}
 	}

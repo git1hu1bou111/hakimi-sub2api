@@ -102,6 +102,7 @@ func GetBasePaymentType(t string) string {
 
 // CreatePaymentRequest holds the parameters for creating a new payment.
 type CreatePaymentRequest struct {
+	CryptoRate  string // Server-controlled BEpusdt rate; 1 means exact USDT denomination via USD fiat.
 	OrderID     string // Internal order ID
 	Amount      string // 支付金额，按服务商实例配置的币种解释
 	PaymentType string // e.g. "alipay", "wxpay", "stripe"

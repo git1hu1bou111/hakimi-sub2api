@@ -135,6 +135,8 @@ export const PROVIDER_CONFIG_FIELDS: Record<string, ConfigFieldDef[]> = {
     { key: 'pid', label: 'PID', sensitive: false },
     { key: 'pkey', label: 'PKey', sensitive: true },
     { key: 'apiBase', label: '', sensitive: false },
+    { key: 'usdtRecharge', label: 'USDT 实时汇率充值（赠送 1%）', sensitive: false, defaultValue: 'false', hintKey: 'admin.settings.payment.field_usdtRechargeHint', options: [{ value: 'false', label: '关闭' }, { value: 'true', label: '开启' }] },
+    { key: 'currency', label: '', sensitive: false, defaultValue: 'CNY', hintKey: 'admin.settings.payment.field_easypayCurrencyHint', options: PAYMENT_CURRENCY_OPTIONS.filter(option => option.value === 'CNY' || option.value === 'USD') },
     { key: 'queryApiPath', label: '', sensitive: false, optional: true, hintKey: 'admin.settings.payment.field_easypayQueryApiPathHint' },
     { key: 'querySignType', label: '', sensitive: false, optional: true, hintKey: 'admin.settings.payment.field_easypayQuerySignTypeHint', options: EASYPAY_QUERY_SIGN_TYPE_OPTIONS },
     { key: 'queryPrivateKey', label: '', sensitive: true, optional: true, clearable: true, hintKey: 'admin.settings.payment.field_easypayQueryPrivateKeyHint' },
