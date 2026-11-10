@@ -186,7 +186,7 @@ func (s *UserIntelligenceTestService) Options(ctx context.Context, userID, keyID
 	if err != nil {
 		return nil, infraerrors.ServiceUnavailable("TEST_MODELS_UNAVAILABLE", "暂时无法读取分组模型，请稍后再试")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, userTestMaxBytes+1))
 	if err != nil || len(raw) > userTestMaxBytes || resp.StatusCode != 200 {
 		return nil, infraerrors.ServiceUnavailable("TEST_MODELS_UNAVAILABLE", "暂时无法读取分组模型，请检查密钥权限后再试")
@@ -234,7 +234,7 @@ func (s *UserIntelligenceTestService) Start(ctx context.Context, userID, keyID i
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	// One short global admission lock, shared by replicas; never held during inference.
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(736120041)"); err != nil {
 		return nil, err
@@ -385,7 +385,7 @@ func (s *UserIntelligenceTestService) History(ctx context.Context, userID, keyID
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []*UserIntelligenceRun{}
 	for rows.Next() {
 		r, err := scanUserTest(rows)
@@ -433,7 +433,7 @@ func (s *UserIntelligenceTestService) infer(ctx context.Context, k *APIKey, clie
 		a.Error = "连接失败或请求超时，本轮未完成"
 		return a
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// The gateway generates its own billing/correlation ID. Request headers are
 	// deliberately not trusted for deduplication, so retain the returned ID.
 	if gatewayID := resp.Header.Get("X-Client-Request-ID"); gatewayID != "" {
@@ -601,9 +601,9 @@ func readIntelligenceResponse(body io.Reader, kind, contentType string) (userTes
 		}
 		if strings.HasPrefix(line, "data:") {
 			if eventData.Len() > 0 {
-				eventData.WriteByte('\n')
+				_ = eventData.WriteByte('\n')
 			}
-			eventData.WriteString(strings.TrimPrefix(line, "data:"))
+			_, _ = eventData.WriteString(strings.TrimPrefix(line, "data:"))
 			if eventData.Len() > userTestMaxBytes {
 				return a, errors.New("oversize event")
 			}
