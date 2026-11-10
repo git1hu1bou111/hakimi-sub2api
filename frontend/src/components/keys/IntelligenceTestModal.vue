@@ -1,5 +1,5 @@
 <template>
-  <BaseDialog :show="show" title="智商测试" width="wide" @close="$emit('close')">
+  <BaseDialog :show="show" title="智商测试" :width="animation ? 'extra-wide' : 'wide'" @close="$emit('close')">
     <div class="space-y-5">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <span class="rounded-lg bg-emerald-50 px-3 py-1.5 text-sm text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">{{ apiKey.group?.name }} · {{ apiKey.group?.rate_multiplier }}×</span>
@@ -30,18 +30,25 @@
       </div>
 
       <template v-if="animation">
-        <p v-if="scriptedAnimation" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">这份答卷使用了脚本动画。安全预览未执行脚本，请下载 HTML 查看完整动画后再判断效果。</p>
-        <iframe v-if="run?.result.html" :key="run.id" :srcdoc="preview" sandbox="" referrerpolicy="no-referrer" title="模型生成的 SVG 动画预览" class="h-80 w-full rounded-xl border border-gray-200 bg-white dark:border-dark-600" />
-        <div v-else class="flex h-44 items-center justify-center rounded-xl border border-dashed border-gray-200 text-sm text-gray-500 dark:border-dark-600">{{ running ? '正在等待完整 HTML…' : '生成完成后，动画会在这里播放' }}</div>
+        <Teleport v-if="show && run?.result.html" to="body" :disabled="!previewExpanded">
+          <section :class="previewExpanded ? 'fixed inset-0 z-[70] flex flex-col gap-3 bg-gray-100 p-3 dark:bg-dark-900 sm:p-5' : 'space-y-3'" aria-label="动画预览">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-sm font-medium">{{ previewExpanded ? '全屏预览' : '动画预览' }}</span>
+              <div class="flex flex-wrap gap-2"><button type="button" class="btn btn-secondary" @click="replay">{{ previewActive ? '重新播放' : '播放动画' }}</button><button v-if="previewActive" type="button" class="btn btn-secondary" @click="previewActive = false">停止播放</button><button ref="expandButton" type="button" class="btn btn-secondary" @click="previewExpanded = !previewExpanded">{{ previewExpanded ? '退出全屏' : '全屏预览' }}</button></div>
+            </div>
+            <iframe v-if="previewActive" :key="`${run.id}-${previewRevision}`" :srcdoc="preview" sandbox="allow-scripts" referrerpolicy="no-referrer" allow="camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'; payment 'none'; usb 'none'" title="模型生成的 SVG 动画预览" class="w-full rounded-xl border border-gray-200 bg-white dark:border-dark-600" :class="previewExpanded ? 'min-h-0 flex-1' : 'h-[clamp(280px,60vw,380px)] sm:h-[clamp(360px,60vh,680px)]'" />
+            <div v-else class="flex items-center justify-center rounded-xl border border-dashed border-gray-300 text-sm text-gray-500" :class="previewExpanded ? 'flex-1' : 'h-[clamp(280px,60vw,380px)] sm:h-[clamp(360px,60vh,680px)]'">预览已停止，点击播放动画重新观看</div>
+          </section>
+        </Teleport>
+        <div v-else class="flex h-44 items-center justify-center rounded-xl border border-dashed border-gray-200 text-sm text-gray-500 dark:border-dark-600">{{ run?.result.html ? '预览已停止，点击播放动画重新观看' : running ? '正在等待完整 HTML…' : '生成完成后，动画会在这里播放' }}</div>
         <div v-if="run?.result.html" class="space-y-3">
           <div class="flex flex-wrap gap-2"><button type="button" class="btn btn-secondary" @click="showCode = !showCode">{{ showCode ? '收起 HTML' : '查看 HTML' }}</button><button type="button" class="btn btn-secondary" @click="download">下载 HTML</button></div>
           <p class="break-all text-xs text-gray-500">{{ run.result.filename }} · 北京时间</p>
           <pre v-if="showCode" class="max-h-96 overflow-auto rounded-lg bg-gray-50 p-3 text-xs dark:bg-dark-800"><code>{{ run.result.html }}</code></pre>
-          <p class="text-xs text-gray-500">预览支持 SVG / CSS 动画，禁用脚本与外部资源。请人工判断画面效果，生成成功不代表测试通过。</p>
+          <p class="text-xs text-gray-500">动画会在隔离预览中播放。请人工判断画面效果，生成成功不代表测试通过。</p>
         </div>
       </template>
 
-      <div v-if="run" class="text-xs leading-relaxed text-gray-500">本轮输入 {{ run.result.input_tokens.toLocaleString() }} · 输出 {{ run.result.output_tokens.toLocaleString() }} token<span v-if="run.result.cache_read_tokens"> · 缓存读取 {{ run.result.cache_read_tokens.toLocaleString() }}</span><span v-if="run.result.cache_creation_tokens"> · 缓存写入 {{ run.result.cache_creation_tokens.toLocaleString() }}</span><br><span v-if="run.result.actual_cost != null">已入账费用 ${{ run.result.actual_cost.toFixed(6) }} · </span>费用按当前密钥的分组规则结算，以最终使用记录为准。</div>
       <button type="button" class="flex w-full items-center justify-center rounded-xl bg-emerald-600 px-4 py-3 font-medium text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!model || !options?.models.length || loading || running || submitting" @click="start">{{ submitting ? '正在创建任务…' : running ? '请等待本轮完成' : animation ? '生成 HTML' : '开始测试' }}</button>
       <p class="text-center text-xs leading-relaxed text-gray-500">按本轮实际总用量收费，以最终账单为准。单轮最长等待 5 分钟。<br>{{ animation ? '只生成 HTML，由你人工评阅。' : '结果仅反映本次题目表现；知识截止时间可能影响首相题。' }}</p>
       <details class="border-t border-gray-200 pt-4 dark:border-dark-600"><summary class="cursor-pointer text-sm">历史报告（最近 20 轮）</summary><p v-if="!history.length" class="mt-3 text-sm text-gray-500">暂无记录</p><div v-else class="mt-3 space-y-2"><button v-for="item in history" :key="item.id" type="button" :disabled="running || submitting" class="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-50 disabled:opacity-50 dark:hover:bg-dark-700" @click="loadHistory(item.id)">{{ localTime(item.created_at) }} · {{ intelligenceModelLabel(item.model) }} · {{ item.status === 'completed' ? item.kind === 'animation' ? '人工评阅' : '已完成' : item.status === 'running' ? '进行中' : '未完成' }}</button></div></details>
@@ -50,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import { intelligenceApi, intelligenceModelLabel, type IntelligenceOptions, type IntelligenceRun } from '@/api/intelligence'
 import { buildIntelligencePreview, intelligenceDownload } from '@/utils/intelligencePreview'
@@ -60,6 +67,7 @@ const props = defineProps<{ show: boolean; apiKey: ApiKey }>()
 defineEmits<{ (e: 'close'): void }>()
 const options = ref<IntelligenceOptions | null>(null), run = ref<IntelligenceRun | null>(null), history = ref<IntelligenceRun[]>([])
 const model = ref(''), loading = ref(false), submitting = ref(false), error = ref(''), showCode = ref(false), now = ref(Date.now())
+const previewActive = ref(true), previewRevision = ref(0), previewExpanded = ref(false), expandButton = ref<HTMLButtonElement | null>(null)
 let generation = 0, pollTimer: ReturnType<typeof setTimeout> | undefined
 const clock = setInterval(() => { now.value = Date.now() }, 1000)
 const animation = computed(() => props.apiKey.group?.platform === 'anthropic')
@@ -68,7 +76,11 @@ const questions = computed(() => run.value?.result.questions || options.value?.q
 const completedCount = computed(() => questions.value.filter(q => ['passed', 'failed'].includes(q.status)).length)
 const elapsed = computed(() => { if (!run.value) return '00:00'; const end = run.value.finished_at ? Date.parse(run.value.finished_at) : Math.min(now.value, Date.parse(run.value.deadline_at)); const seconds = Math.max(0, Math.floor((end - Date.parse(run.value.created_at)) / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` })
 const preview = computed(() => run.value?.result.html ? buildIntelligencePreview(run.value.result.html) : '')
-const scriptedAnimation = computed(() => /<script\b|\son[a-z]+\s*=/i.test(run.value?.result.html || ''))
+watch(() => [props.show, run.value?.id], () => { previewActive.value = true; previewRevision.value = 0; previewExpanded.value = false })
+watch(previewExpanded, async () => { await nextTick(); expandButton.value?.focus() })
+function exitExpanded(event: KeyboardEvent) { if (previewExpanded.value && event.key === 'Escape') { previewExpanded.value = false; event.stopImmediatePropagation() } }
+onMounted(() => document.addEventListener('keydown', exitExpanded, true))
+function replay() { previewActive.value = true; previewRevision.value++ }
 const localTime = (value: string) => new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
 const questionLabel = (value: string) => ({ passed: '通过', failed: '未通过', running: '检测中', pending: '待检测', error: '未完成' }[value] || '待检测')
 const message = (err: unknown) => { const e = err as {message?: string; response?: {data?: {message?: string}}}; return e.response?.data?.message || e.message || '请求失败，请稍后再试' }
@@ -124,5 +136,5 @@ watch(() => [props.show, props.apiKey.id] as const, async ([show, key]) => {
   if (results[1].status === 'fulfilled') { history.value = results[1].value; const active = history.value.find(item => item.status === 'running'); if (active) await loadHistory(active.id) }
   loading.value = false
 }, { immediate: true })
-onUnmounted(() => { generation++; clearTimeout(pollTimer); clearInterval(clock) })
+onUnmounted(() => { generation++; clearTimeout(pollTimer); clearInterval(clock); document.removeEventListener('keydown', exitExpanded, true) })
 </script>
