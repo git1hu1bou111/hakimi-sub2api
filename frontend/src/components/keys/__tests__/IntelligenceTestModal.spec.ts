@@ -23,6 +23,7 @@ describe('intelligence test modal',()=>{
   await vi.advanceTimersByTimeAsync(2500);await flushPromises()
   const frame=wrapper.find('iframe');expect(frame.attributes('sandbox')).toBe('');expect(frame.attributes('srcdoc')).not.toContain('<script>')
   expect(wrapper.text()).toContain('请自行观看判断')
+  expect(wrapper.text()).toContain('请下载 HTML 查看完整动画后再判断效果')
   wrapper.unmount();const count=vi.mocked(intelligenceApi.get).mock.calls.length
   await vi.advanceTimersByTimeAsync(10000);expect(vi.mocked(intelligenceApi.get).mock.calls.length).toBe(count)
  })

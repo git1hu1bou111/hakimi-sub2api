@@ -30,6 +30,7 @@
       </div>
 
       <template v-if="animation">
+        <p v-if="scriptedAnimation" class="rounded-xl bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">这份答卷使用了脚本动画。安全预览未执行脚本，请下载 HTML 查看完整动画后再判断效果。</p>
         <iframe v-if="run?.result.html" :key="run.id" :srcdoc="preview" sandbox="" referrerpolicy="no-referrer" title="模型生成的 SVG 动画预览" class="h-80 w-full rounded-xl border border-gray-200 bg-white dark:border-dark-600" />
         <div v-else class="flex h-44 items-center justify-center rounded-xl border border-dashed border-gray-200 text-sm text-gray-500 dark:border-dark-600">{{ running ? '正在等待完整 HTML…' : '生成完成后，动画会在这里播放' }}</div>
         <div v-if="run?.result.html" class="space-y-3">
@@ -67,6 +68,7 @@ const questions = computed(() => run.value?.result.questions || options.value?.q
 const completedCount = computed(() => questions.value.filter(q => ['passed', 'failed'].includes(q.status)).length)
 const elapsed = computed(() => { if (!run.value) return '00:00'; const end = run.value.finished_at ? Date.parse(run.value.finished_at) : Math.min(now.value, Date.parse(run.value.deadline_at)); const seconds = Math.max(0, Math.floor((end - Date.parse(run.value.created_at)) / 1000)); return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}` })
 const preview = computed(() => run.value?.result.html ? buildIntelligencePreview(run.value.result.html) : '')
+const scriptedAnimation = computed(() => /<script\b|\son[a-z]+\s*=/i.test(run.value?.result.html || ''))
 const localTime = (value: string) => new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
 const questionLabel = (value: string) => ({ passed: '通过', failed: '未通过', running: '检测中', pending: '待检测', error: '未完成' }[value] || '待检测')
 const message = (err: unknown) => { const e = err as {message?: string; response?: {data?: {message?: string}}}; return e.response?.data?.message || e.message || '请求失败，请稍后再试' }
