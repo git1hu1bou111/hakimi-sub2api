@@ -29,6 +29,20 @@ describe('intelligence animation isolation', () => {
     expect(doc.querySelector('svg #head')).not.toBeNull()
     expect(doc.querySelector('script')?.textContent).toContain('getElementById("head")')
   })
+  it('uses the panel nonce for inherited CSP without allowing nonce-based external loaders', () => {
+    const bootstrap = document.createElement('script')
+    bootstrap.nonce = 'panel-test-nonce'
+    document.head.append(bootstrap)
+    try {
+      const html = buildIntelligencePreview('<script nonce="untrusted">requestAnimationFrame(()=>{})</script>')
+      const doc = new DOMParser().parseFromString(html, 'text/html')
+      expect(doc.querySelector('script')?.nonce).toBe('panel-test-nonce')
+      const csp = doc.querySelector('meta[http-equiv="Content-Security-Policy"]')!.getAttribute('content')!
+      expect(csp).toContain("script-src 'unsafe-inline'")
+      expect(csp).not.toContain('nonce-')
+      expect(html).not.toContain('untrusted')
+    } finally { bootstrap.remove() }
+  })
   it('keeps head and body script order with policy first, stripping external loaders and model nonces', () => {
     const html = buildIntelligencePreview('<html><head><script nonce="model">const wheelSpeed=2</script><style>svg{width:100%}</style></head><body><svg id="bike"/><script src="https://evil.invalid/a.js"></script><script type="importmap">{"imports":{"x":"https://evil.invalid/x"}}</script><script>requestAnimationFrame(()=>document.querySelector("svg").setAttribute("data-frame","1"))</script></body></html>')
     const doc = new DOMParser().parseFromString(html, 'text/html')
