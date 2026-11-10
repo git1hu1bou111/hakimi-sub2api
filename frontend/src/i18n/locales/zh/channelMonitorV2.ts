@@ -106,6 +106,9 @@ export default {
       groupsSelected: '已选择 {count} 个分组',
       groupsAll: '全部分组',
       groupsEmpty: '没有可选择的分组',
+      cacheDisplayTitle: '缓存率显示上限',
+      cacheDisplayHint: '仅调整用户渠道卡片及历史提示的显示，真实用量、缓存和计费保持不变。高缓存区间平滑压缩并随真实值浮动；上限90%时，真实94.3%约显示88.1%。留空恢复真实显示。',
+      cacheDisplayDefault: '真实值',
       errorsTitle: '错误分类与忽略',
       errorsHint:
         '勾选「忽略」的类别不计入错误率与健康分，仍在错误原因列表中以灰色显示并标记忽略。未匹配的错误归入「其他」。',

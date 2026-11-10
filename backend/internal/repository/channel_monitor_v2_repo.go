@@ -21,17 +21,17 @@ func NewChannelMonitorV2Repository(db *sql.DB) service.ChannelMonitorV2Repositor
 
 func (r *channelMonitorV2Repository) GetConfig(ctx context.Context) (*service.ChannelMonitorV2Config, error) {
 	var cfg service.ChannelMonitorV2Config
-	var platforms, thresholds []byte
+	var platforms, thresholds, displayCaps []byte
 	err := r.db.QueryRowContext(ctx, `
 		SELECT version, enabled, refresh_interval_seconds, platforms, group_ids,
 		       COALESCE(ignored_error_categories, '{}'),
 		       COALESCE(health_thresholds, '{}'::jsonb),
-		       updated_at, updated_by
+		       updated_at, updated_by, cache_rate_display_caps
 		FROM channel_monitor_v2_config WHERE id = 1`).Scan(
 		&cfg.Version, &cfg.Enabled, &cfg.RefreshIntervalSeconds, &platforms,
 		pq.Array(&cfg.GroupIDs), pq.Array(&cfg.IgnoredErrorCategories),
 		&thresholds,
-		&cfg.UpdatedAt, &cfg.UpdatedBy,
+		&cfg.UpdatedAt, &cfg.UpdatedBy, &displayCaps,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get channel monitor v2 config: %w", err)
@@ -47,6 +47,9 @@ func (r *channelMonitorV2Repository) GetConfig(ctx context.Context) (*service.Ch
 		_ = json.Unmarshal(thresholds, &cfg.HealthThresholds)
 	}
 	cfg.HealthThresholds = service.NormalizeChannelMonitorV2HealthThresholds(cfg.HealthThresholds)
+	if err := json.Unmarshal(displayCaps, &cfg.CacheRateDisplayCaps); err != nil {
+		return nil, fmt.Errorf("decode cache display caps: %w", err)
+	}
 	return &cfg, nil
 }
 
@@ -64,23 +67,33 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 		return nil, err
 	}
 	var updated service.ChannelMonitorV2Config
-	var raw, rawThresholds []byte
+	// An older client omitting this field must not erase existing display preferences.
+	var caps any
+	if cfg.CacheRateDisplayCaps != nil {
+		encoded, err := json.Marshal(cfg.CacheRateDisplayCaps)
+		if err != nil {
+			return nil, err
+		}
+		caps = string(encoded)
+	}
+	var raw, rawThresholds, rawDisplayCaps []byte
 	err = r.db.QueryRowContext(ctx, `
 		UPDATE channel_monitor_v2_config
 		SET version = version + 1, enabled = $1, refresh_interval_seconds = $2,
 		    platforms = $3, group_ids = $4, ignored_error_categories = $5,
-		    health_thresholds = $6, updated_by = $7, updated_at = NOW()
+		    health_thresholds = $6, updated_by = $7, updated_at = NOW(),
+		    cache_rate_display_caps = COALESCE($9::jsonb, cache_rate_display_caps)
 		WHERE id = 1 AND version = $8
 		RETURNING version, enabled, refresh_interval_seconds, platforms, group_ids,
 		          COALESCE(ignored_error_categories, '{}'),
 		          COALESCE(health_thresholds, '{}'::jsonb),
-		          updated_at, updated_by`,
+		          updated_at, updated_by, cache_rate_display_caps`,
 		cfg.Enabled, cfg.RefreshIntervalSeconds, platforms, pq.Array(cfg.GroupIDs),
-		pq.Array(cfg.IgnoredErrorCategories), thresholds, cfg.UpdatedBy, expectedVersion,
+		pq.Array(cfg.IgnoredErrorCategories), thresholds, cfg.UpdatedBy, expectedVersion, caps,
 	).Scan(&updated.Version, &updated.Enabled, &updated.RefreshIntervalSeconds, &raw,
 		pq.Array(&updated.GroupIDs), pq.Array(&updated.IgnoredErrorCategories),
 		&rawThresholds,
-		&updated.UpdatedAt, &updated.UpdatedBy)
+		&updated.UpdatedAt, &updated.UpdatedBy, &rawDisplayCaps)
 	if err == sql.ErrNoRows {
 		return nil, service.ErrChannelMonitorV2ConfigConflict
 	}
@@ -96,6 +109,9 @@ func (r *channelMonitorV2Repository) UpdateConfig(ctx context.Context, cfg servi
 	updated.HealthThresholds = service.DefaultChannelMonitorV2HealthThresholds()
 	_ = json.Unmarshal(rawThresholds, &updated.HealthThresholds)
 	updated.HealthThresholds = service.NormalizeChannelMonitorV2HealthThresholds(updated.HealthThresholds)
+	if err := json.Unmarshal(rawDisplayCaps, &updated.CacheRateDisplayCaps); err != nil {
+		return nil, fmt.Errorf("decode cache display caps: %w", err)
+	}
 	return &updated, nil
 }
 
@@ -1319,7 +1335,7 @@ func shiftSQLPlaceholders(query string, offset int) string {
 
 type metricAccumulator struct {
 	success, errors, upstreamAffected, upstreamAttempts, input, output, cacheCreation, cacheRead, cacheSampleRead, cacheSamplePrompt, ttftSum, ttftCount, durationSum, durationCount int64
-	hist                                                                                                                                         map[string]map[int64]int64
+	hist                                                                                                                                                                             map[string]map[int64]int64
 }
 
 func newMetricAccumulator() *metricAccumulator {

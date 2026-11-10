@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -42,7 +43,9 @@ type ChannelMonitorV2Config struct {
 	RefreshIntervalSeconds int                              `json:"refresh_interval_seconds"`
 	Platforms              []ChannelMonitorV2PlatformConfig `json:"platforms"`
 	GroupIDs               []int64                          `json:"group_ids"`
-	HealthThresholds       ChannelMonitorV2HealthThresholds `json:"health_thresholds"`
+	// Display-only percentages keyed by group ID. Never applied to metrics or billing.
+	CacheRateDisplayCaps map[int64]float64                `json:"cache_rate_display_caps,omitempty"`
+	HealthThresholds     ChannelMonitorV2HealthThresholds `json:"health_thresholds"`
 	// IgnoredErrorCategories are excluded from error_rate / health scoring.
 	// They still appear in the error breakdown with ignored=true (greyed in UI).
 	// Unknown categories always roll into "other" via the taxonomy classifier.
@@ -246,14 +249,15 @@ type ChannelMonitorV2ModelRow struct {
 }
 
 type ChannelMonitorV2MatrixRow struct {
-	Platform     string                       `json:"platform"`
-	GroupID      *int64                       `json:"group_id,omitempty"`
-	GroupName    string                       `json:"group_name,omitempty"`
-	Model        string                       `json:"model,omitempty"`
-	Metrics      ChannelMonitorV2Metric       `json:"metrics"`
-	Health       ChannelMonitorV2Health       `json:"health"`
-	Buckets      []ChannelMonitorV2TrendPoint `json:"buckets"`
-	Intelligence *IntelligenceUptime          `json:"intelligence,omitempty"`
+	Platform            string                       `json:"platform"`
+	GroupID             *int64                       `json:"group_id,omitempty"`
+	GroupName           string                       `json:"group_name,omitempty"`
+	CacheRateDisplayCap *float64                     `json:"cache_rate_display_cap,omitempty"`
+	Model               string                       `json:"model,omitempty"`
+	Metrics             ChannelMonitorV2Metric       `json:"metrics"`
+	Health              ChannelMonitorV2Health       `json:"health"`
+	Buckets             []ChannelMonitorV2TrendPoint `json:"buckets"`
+	Intelligence        *IntelligenceUptime          `json:"intelligence,omitempty"`
 }
 
 type ChannelMonitorV2Matrix struct {
@@ -533,6 +537,16 @@ func (s *ChannelMonitorV2Service) Matrix(ctx context.Context, filter ChannelMoni
 	if err != nil {
 		return nil, err
 	}
+	if matrix != nil {
+		for i := range matrix.Items {
+			row := &matrix.Items[i]
+			if row.GroupID != nil {
+				if cap, ok := cfg.CacheRateDisplayCaps[*row.GroupID]; ok {
+					row.CacheRateDisplayCap = &cap
+				}
+			}
+		}
+	}
 	if s.intelligence != nil {
 		if err := s.intelligence.Attach(ctx, matrix, filter); err != nil {
 			return nil, err
@@ -632,6 +646,7 @@ func redactChannelMonitorV2PublicConfig(cfg *ChannelMonitorV2Config) {
 		return
 	}
 	cfg.GroupIDs = nil
+	cfg.CacheRateDisplayCaps = nil
 	cfg.IgnoredErrorCategories = nil
 	cfg.UpdatedBy = nil
 	for i := range cfg.Platforms {
@@ -758,6 +773,11 @@ func channelMonitorV2TopUsersWithSelf(items []ChannelMonitorV2UserRow, selfIndex
 }
 
 func normalizeChannelMonitorV2Config(cfg *ChannelMonitorV2Config) error {
+	for groupID, cap := range cfg.CacheRateDisplayCaps {
+		if groupID <= 0 || math.IsNaN(cap) || math.IsInf(cap, 0) || cap < 0 || cap > 100 {
+			return fmt.Errorf("%w: cache display caps require positive group IDs and percentages between 0 and 100", ErrChannelMonitorV2InvalidConfig)
+		}
+	}
 	if cfg.RefreshIntervalSeconds == 0 {
 		cfg.RefreshIntervalSeconds = 300
 	}

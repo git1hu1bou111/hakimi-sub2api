@@ -105,6 +105,8 @@ export interface MonitorConfig {
   refresh_interval_seconds: 60 | 300
   platforms: Array<{ platform: string; enabled: boolean; models: string[] }>
   group_ids: number[]
+  /** Display-only percentage ceilings for V3 channel cards, keyed by group ID. */
+  cache_rate_display_caps?: Record<string, number>
   health_thresholds: {
     minimum_sample: number
     warning_error_rate: number
@@ -163,6 +165,7 @@ export interface MonitorMatrixRow {
   platform: string
   group_id?: number
   group_name?: string
+  cache_rate_display_cap?: number
   model?: string
   metrics: MonitorMetric
   health: MonitorHealth

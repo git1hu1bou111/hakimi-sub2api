@@ -34,6 +34,7 @@
       :buckets="row.buckets"
       :countdown-seconds="countdownSeconds"
       :length="timelineLength"
+      :cache-rate-display-cap="row.cache_rate_display_cap"
     />
     <IntelligenceUptime v-if="row.platform === 'openai'" :uptime="row.intelligence" :coverage="coverage" />
   </article>
@@ -44,7 +45,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitorStatus } from '@/api/admin/channelMonitor'
 import type { MonitorMatrixRow, MonitorCoverage } from '@/api/channelMonitorV2'
-import { availabilityTextClass, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
+import { availabilityTextClass, cacheRateForDisplay, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import ProviderIcon from './ProviderIcon.vue'
 import ChannelMonitorV3Timeline from './ChannelMonitorV3Timeline.vue'
@@ -76,7 +77,7 @@ const latestHealth = computed(() => latestBucket.value?.health ?? props.row.heal
 // 老数据没有该字段时回退到原始口径 cache_rate。健康分/趋势图仍用原始口径。
 const cacheRate = computed(() => {
   const metrics = latestMetrics.value
-  return formatMonitorPercent(metrics.cache_rate_warm || metrics.cache_rate)
+  return formatMonitorPercent(cacheRateForDisplay(metrics.cache_rate_warm || metrics.cache_rate, props.row.cache_rate_display_cap))
 })
 const availabilityPercent = computed(() => (1 - latestMetrics.value.error_rate) * 100)
 const successRate = computed(() => formatMonitorPercent(availabilityPercent.value / 100))

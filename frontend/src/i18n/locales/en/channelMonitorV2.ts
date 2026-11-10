@@ -108,6 +108,9 @@ export default {
       groupsSelected: '{count} groups selected',
       groupsAll: 'All groups',
       groupsEmpty: 'No groups available',
+      cacheDisplayTitle: 'Cache rate display ceiling',
+      cacheDisplayHint: 'Adjusts only user channel cards and history tooltips. Actual usage, caching and billing stay unchanged. High rates are smoothly compressed and track the real rate; with a 90% ceiling, 94.3% displays as about 88.1%. Leave blank to show the real rate.',
+      cacheDisplayDefault: 'Actual rate',
       errorsTitle: 'Error categories and ignores',
       errorsHint:
         'Checked “ignore” categories are excluded from error rate and health score, but still appear greyed in the error breakdown. Unmatched errors roll into “Other”.',

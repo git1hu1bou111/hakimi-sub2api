@@ -177,6 +177,26 @@
 
       <div class="card overflow-hidden !rounded-3xl !border-0 shadow-sm ring-1 ring-gray-900/5 dark:!bg-dark-800 dark:ring-dark-700">
         <div class="card-header !py-3">
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('channelMonitorV2.settings.cacheDisplayTitle') }}</h3>
+          <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">{{ t('channelMonitorV2.settings.cacheDisplayHint') }}</p>
+        </div>
+        <div class="max-h-[min(40vh,320px)] overflow-y-auto px-5 py-2">
+          <label v-for="group in groups" :key="group.id" class="flex items-center justify-between gap-3 border-b border-gray-100 py-2 last:border-0 dark:border-dark-700">
+            <span class="min-w-0 truncate text-sm">{{ group.name }} <small class="text-gray-400">#{{ group.id }}</small></span>
+            <span class="flex shrink-0 items-center gap-2">
+              <input class="input w-28" type="number" min="0" max="100" step="0.1"
+                :aria-label="`${group.name} ${t('channelMonitorV2.settings.cacheDisplayTitle')}`"
+                :placeholder="t('channelMonitorV2.settings.cacheDisplayDefault')"
+                :value="draft.cache_rate_display_caps?.[String(group.id)] ?? ''"
+                @input="setCacheDisplayCap(group.id, $event)" />
+              <span class="text-sm text-gray-400">%</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card overflow-hidden !rounded-3xl !border-0 shadow-sm ring-1 ring-gray-900/5 dark:!bg-dark-800 dark:ring-dark-700">
+        <div class="card-header !py-3">
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('channelMonitorV2.settings.errorsTitle') }}</h3>
           <p class="mt-0.5 text-xs text-gray-500 dark:text-dark-400">
             {{ t('channelMonitorV2.settings.errorsHint') }}
@@ -393,6 +413,15 @@ function toggleGroup(id: number) {
     : [...draft.value.group_ids, id].sort((a, b) => a - b)
 }
 
+function setCacheDisplayCap(id: number, event: Event) {
+  if (!draft.value) return
+  const input = event.target as HTMLInputElement
+  const caps = { ...(draft.value.cache_rate_display_caps || {}) }
+  if (input.value === '') delete caps[String(id)]
+  else if (Number.isFinite(input.valueAsNumber)) caps[String(id)] = Math.max(0, Math.min(100, input.valueAsNumber))
+  draft.value.cache_rate_display_caps = caps
+}
+
 function isCategoryIgnored(category: string): boolean {
   return Boolean(draft.value?.ignored_error_categories?.includes(category))
 }
@@ -432,6 +461,7 @@ function normalizeConfig(value: MonitorConfig): MonitorConfig {
   const ignored = value.ignored_error_categories
   return {
     ...value,
+    cache_rate_display_caps: { ...(value.cache_rate_display_caps || {}) },
     health_thresholds: { ...defaultThresholds, ...(value.health_thresholds || {}) },
     // Preserve explicit empty arrays from the server (operator cleared all).
     ignored_error_categories: [

@@ -41,6 +41,7 @@ function config(): MonitorConfig {
       { platform: 'custom-provider', enabled: true, models: ['custom-model'] },
     ],
     group_ids: [42],
+    cache_rate_display_caps: {},
     ignored_error_categories: [],
     health_thresholds: {
       minimum_sample: 70, warning_error_rate: 0.1, critical_error_rate: 0.3,
@@ -75,6 +76,20 @@ beforeEach(() => {
 })
 
 describe('MonitorSettingsPanel platform configuration', () => {
+  it('saves a per-group display ceiling and allows clearing it', async () => {
+    mocks.groups.mockResolvedValue([{ id: 101, name: 'GPT', platform: 'openai' }, { id: 105, name: 'High cache', platform: 'openai' }])
+    const wrapper = await panel()
+    const input = wrapper.get('input[aria-label="GPT channelMonitorV2.settings.cacheDisplayTitle"]')
+    await input.setValue('90')
+    await button(wrapper, 'save').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ cache_rate_display_caps: { '101': 90 }, group_ids: [42] }))
+    await input.setValue('')
+    await button(wrapper, 'save').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ cache_rate_display_caps: {} }))
+    wrapper.unmount()
+  })
   it('adds a missing provider and saves its models without changing existing settings', async () => {
     const original = config()
     const wrapper = await panel(original)

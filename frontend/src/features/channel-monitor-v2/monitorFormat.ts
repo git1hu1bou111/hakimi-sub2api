@@ -63,6 +63,15 @@ export function formatMonitorPercent(value: number, locale = monitorIntlLocale()
   }).format((value || 0) * 100)}%`
 }
 
+/** Compress the upper range smoothly for display; source metrics stay untouched. */
+export function cacheRateForDisplay(value: number, capPercent?: number | null): number {
+  if (typeof capPercent !== 'number' || !Number.isFinite(capPercent) || capPercent < 0 || capPercent > 100) return value
+  const cap = capPercent / 100
+  const start = Math.max(0, cap - 0.05)
+  if (value <= start) return value
+  return start + (Math.min(value, 1) - start) * (cap - start) / (1 - start)
+}
+
 /**
  * Color availability consistently across the V3 cards and timeline.
  * Thresholds are ordered from worst to best and match the monitor legend.
