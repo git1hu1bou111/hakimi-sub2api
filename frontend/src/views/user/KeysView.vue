@@ -392,6 +392,10 @@
 
           <template #cell-actions="{ row }">
             <div class="flex items-center gap-1">
+              <button v-if="supportsIntelligence(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-emerald-600 transition-colors hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-900/20" @click="intelligenceKey = row">
+                <Icon name="sparkles" size="sm" />
+                <span class="text-xs">智商测试</span>
+              </button>
               <!-- Use Key Button -->
               <button
                 @click="openUseKeyModal(row)"
@@ -1070,6 +1074,7 @@
     />
 
     <!-- Use Key Modal -->
+    <IntelligenceTestModal v-if="intelligenceKey" :show="true" :api-key="intelligenceKey" @close="intelligenceKey = null" />
     <UseKeyModal
       :show="showUseKeyModal"
       :api-key="selectedKey?.key || ''"
@@ -1199,6 +1204,8 @@
 </template>
 
 <script setup lang="ts">
+import IntelligenceTestModal from '@/components/keys/IntelligenceTestModal.vue'
+import { supportsIntelligence } from '@/api/intelligence'
 	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
@@ -1402,6 +1409,7 @@ const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
+const intelligenceKey = ref<ApiKey | null>(null)
 const showCcsClientSelect = ref(false)
 const showColumnDropdown = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)

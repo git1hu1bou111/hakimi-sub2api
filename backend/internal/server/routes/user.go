@@ -80,6 +80,10 @@ func RegisterUserRoutes(
 			keys.POST("", h.APIKey.Create)
 			keys.PUT("/:id", h.APIKey.Update)
 			keys.DELETE("/:id", h.APIKey.Delete)
+			keys.GET("/:id/intelligence/options", panelRateLimiter.Heavy(), h.APIKey.IntelligenceOptions)
+			keys.POST("/:id/intelligence", panelRateLimiter.Heavy(), h.APIKey.StartIntelligence)
+			keys.GET("/:id/intelligence", h.APIKey.IntelligenceHistory)
+			keys.GET("/:id/intelligence/:runID", h.APIKey.GetIntelligence)
 		}
 
 		// 用户可用分组（非管理员接口）

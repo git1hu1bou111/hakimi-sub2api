@@ -3,12 +3,14 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -21,12 +23,16 @@ import (
 // APIKeyHandler handles API key-related requests
 type APIKeyHandler struct {
 	apiKeyService *service.APIKeyService
+	intelligence  *service.UserIntelligenceTestService
+	config        *config.Config
 }
 
 // NewAPIKeyHandler creates a new APIKeyHandler
-func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
+func NewAPIKeyHandler(apiKeyService *service.APIKeyService, db *sql.DB, cfg *config.Config) *APIKeyHandler {
 	return &APIKeyHandler{
 		apiKeyService: apiKeyService,
+		intelligence:  service.NewUserIntelligenceTestService(apiKeyService, db, cfg),
+		config:        cfg,
 	}
 }
 
