@@ -29,6 +29,8 @@ type paymentOrderLifecycleQueryProvider struct {
 	responses                      []*payment.QueryOrderResponse
 	resp                           *payment.QueryOrderResponse
 	disableAutomaticReconciliation bool
+	queryErr                       error
+	cancelErr                      error
 }
 
 func (p *paymentOrderLifecycleQueryProvider) AutomaticReconciliationEnabled() bool {
@@ -68,6 +70,9 @@ func (p *paymentOrderLifecycleQueryProvider) CreatePayment(context.Context, paym
 func (p *paymentOrderLifecycleQueryProvider) QueryOrder(_ context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
 	p.lastQueryTradeNo = tradeNo
 	p.queryCalls++
+	if p.queryErr != nil {
+		return nil, p.queryErr
+	}
 	if len(p.responses) > 0 {
 		resp := p.responses[0]
 		if len(p.responses) > 1 {
@@ -89,7 +94,7 @@ func (p *paymentOrderLifecycleQueryProvider) Refund(context.Context, payment.Ref
 func (p *paymentOrderLifecycleQueryProvider) CancelPayment(_ context.Context, tradeNo string) error {
 	p.lastCancelTradeNo = tradeNo
 	p.cancelCalls++
-	return nil
+	return p.cancelErr
 }
 
 func (r *paymentOrderLifecycleRedeemRepo) Create(context.Context, *RedeemCode) error {

@@ -487,6 +487,7 @@ func (s *PaymentService) invokeProvider(ctx context.Context, order *dbent.Paymen
 	}, sel, outTradeNo, payAmountStr, subject)
 	if req.usdtQuote != nil {
 		providerReq.CryptoRate = "1"
+		providerReq.ExpiresAt = order.ExpiresAt
 	}
 	providerReq.AlipayMobilePrecreate = shouldUseAlipayMobilePrecreate(req, cfg, sel)
 	finishProviderCall := servertiming.ObserveDependency(ctx, "payment")

@@ -88,7 +88,7 @@ func TestUSDTFixedRateSignedAndEnforced(t *testing.T) {
 	p.config["upstreamVerifyMode"] = "dry_run"
 	p.config["customMethods"] = `[{"type":"usdt_bep20","upstreamType":"usdt.bep20"}]`
 	require.Equal(t, easyPayUpstreamVerifyEnforce, p.upstreamVerifyMode())
-	result, err := p.CreatePayment(context.Background(), payment.CreatePaymentRequest{OrderID: "usdt", Amount: "10.00", PaymentType: "usdt_bep20", CryptoRate: "1"})
+	result, err := p.createRedirectPayment(payment.CreatePaymentRequest{OrderID: "usdt", Amount: "10.00", PaymentType: "usdt_bep20", CryptoRate: "1"})
 	require.NoError(t, err)
 	u, err := url.Parse(result.PayURL)
 	require.NoError(t, err)

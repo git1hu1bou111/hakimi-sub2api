@@ -186,6 +186,9 @@ func (e *EasyPay) AutomaticReconciliationEnabled() bool {
 	if e == nil {
 		return false
 	}
+	if e.config["usdtRecharge"] == "true" {
+		return true
+	}
 	parsed, err := url.Parse(e.apiBase())
 	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
 		return false
@@ -218,6 +221,9 @@ func (e *EasyPay) MerchantIdentityMetadata() map[string]string {
 }
 
 func (e *EasyPay) CreatePayment(ctx context.Context, req payment.CreatePaymentRequest) (*payment.CreatePaymentResponse, error) {
+	if e.config["usdtRecharge"] == "true" {
+		return e.createBEpusdtPayment(ctx, req)
+	}
 	// Payment mode determined by instance config, not payment type.
 	// "popup" → hosted page (submit.php); "qrcode"/default → API call (mapi.php).
 	mode := e.config["paymentMode"]
@@ -247,6 +253,13 @@ func (e *EasyPay) createRedirectPayment(req payment.CreatePaymentRequest) (*paym
 			return nil, fmt.Errorf("invalid USDT recharge rate")
 		}
 		params["rate"] = req.CryptoRate
+	}
+	if e.config["usdtRecharge"] == "true" && !req.ExpiresAt.IsZero() {
+		seconds := int(time.Until(req.ExpiresAt).Seconds())
+		if seconds < 120 {
+			return nil, fmt.Errorf("USDT payment window is too short; create a new order")
+		}
+		params["timeout"] = strconv.Itoa(seconds)
 	}
 	if cid := e.resolveCID(paymentType); cid != "" {
 		params["cid"] = cid
@@ -414,6 +427,9 @@ func (e *EasyPay) upstreamPaymentType(paymentType string) string {
 }
 
 func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
+	if e.config["usdtRecharge"] == "true" {
+		return e.queryBEpusdtOrder(ctx, tradeNo)
+	}
 	var v2Err error
 	if e.shouldUseV2Query() {
 		resp, err := e.queryOrderV2(ctx, tradeNo)

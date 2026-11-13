@@ -125,7 +125,15 @@ func (s *PaymentService) AdminCancelOrder(ctx context.Context, orderID int64) (s
 }
 
 func (s *PaymentService) cancelCore(ctx context.Context, o *dbent.PaymentOrder, fs, op, ad string) (string, error) {
-	if o.PaymentTradeNo != "" || o.PaymentType != "" {
+	if isUSDTOrder(o) {
+		paid, err := s.closeUSDTOrder(ctx, o)
+		if err != nil {
+			return "", err
+		}
+		if paid {
+			return checkPaidResultAlreadyPaid, nil
+		}
+	} else if o.PaymentTradeNo != "" || o.PaymentType != "" {
 		if s.checkPaid(ctx, o) == checkPaidResultAlreadyPaid {
 			return checkPaidResultAlreadyPaid, nil
 		}
@@ -140,6 +148,14 @@ func (s *PaymentService) cancelCore(ctx context.Context, o *dbent.PaymentOrder, 
 			auditAction = "ORDER_EXPIRED"
 		}
 		s.writeAuditLog(ctx, o.ID, auditAction, op, map[string]any{"detail": ad})
+	} else if isUSDTOrder(o) {
+		current, err := s.entClient.PaymentOrder.Get(ctx, o.ID)
+		if err != nil {
+			return "", err
+		}
+		if current.PaidAt != nil {
+			return checkPaidResultAlreadyPaid, nil
+		}
 	}
 	return checkPaidResultCancelled, nil
 }
@@ -164,6 +180,9 @@ func (s *PaymentService) checkPaidWithProvider(ctx context.Context, o *dbent.Pay
 	if prov == nil {
 		return ""
 	}
+	if usdtNeedsPaymentReview(o, time.Now()) {
+		return ""
+	}
 	queryRef := paymentOrderQueryReference(o, prov)
 	if queryRef == "" {
 		return ""
@@ -173,6 +192,9 @@ func (s *PaymentService) checkPaidWithProvider(ctx context.Context, o *dbent.Pay
 	finishProviderCall()
 	if err != nil {
 		slog.Warn("query upstream failed", "orderID", o.ID, "error", err)
+		return ""
+	}
+	if resp == nil || (isUSDTOrder(o) && validateUSDTQueryBinding(o, resp) != nil) {
 		return ""
 	}
 	if resp.Status == payment.ProviderStatusPaid {
@@ -204,6 +226,9 @@ func (s *PaymentService) checkPaidWithProvider(ctx context.Context, o *dbent.Pay
 		}
 		if err := s.HandlePaymentNotification(ctx, &payment.PaymentNotification{TradeNo: notificationTradeNo, OrderID: o.OutTradeNo, Amount: resp.Amount, Status: payment.ProviderStatusSuccess, Metadata: resp.Metadata}, prov.ProviderKey()); err != nil {
 			slog.Error("fulfillment failed during checkPaid", "orderID", o.ID, "error", err)
+			if isUSDTOrder(o) {
+				return ""
+			}
 			// Still return already_paid — order was paid, fulfillment can be retried
 		}
 		return checkPaidResultAlreadyPaid
@@ -239,6 +264,9 @@ func requeryPaidOrderOnce(ctx context.Context, prov payment.Provider, queryRef s
 func paymentOrderQueryReference(order *dbent.PaymentOrder, prov payment.Provider) string {
 	if order == nil {
 		return ""
+	}
+	if isUSDTOrder(order) {
+		return strings.TrimSpace(order.PaymentTradeNo)
 	}
 
 	providerKey := ""
