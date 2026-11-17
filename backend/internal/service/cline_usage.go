@@ -121,7 +121,11 @@ func (c *clineAccountClient) balance(ctx context.Context) (float64, error) {
 	if !micro.Exists() || (micro.Type != gjson.Number && micro.Type != gjson.String) {
 		return 0, fmt.Errorf("%w: missing balance", errClineInvalidResponse)
 	}
-	return math.Round(micro.Float()/100) / 10000, nil
+	amount, ok := cnParseF64(micro.Value())
+	if !ok || math.IsInf(amount, 0) || math.IsNaN(amount) {
+		return 0, fmt.Errorf("%w: invalid balance", errClineInvalidResponse)
+	}
+	return math.Round(amount/100) / 10000, nil
 }
 
 // passLimits 查询 ClinePass 三档窗口；subscribed=false 表示没有订阅。

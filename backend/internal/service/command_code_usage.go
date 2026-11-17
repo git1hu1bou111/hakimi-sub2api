@@ -202,7 +202,7 @@ func (c *commandCodeUsageClient) get(ctx context.Context, path string, query url
 // fetch 取积分与窗口；withPeriod 时再取订阅周期与本周期用量以还原月度窗口。
 // whoami 用来取 orgId，任何失败都整体返回：无从判断是否组织账户时，按个人账户查会把
 // 组织账号查成成员的个人钱包，并据此按余额停调。
-func (c *commandCodeUsageClient) fetch(ctx context.Context, withPeriod bool) (*commandCodeUsage, error) {
+func (c *commandCodeUsageClient) getCredits(ctx context.Context, out any) (url.Values, error) {
 	var whoami struct {
 		Org *struct {
 			ID string `json:"id"`
@@ -216,8 +216,16 @@ func (c *commandCodeUsageClient) fetch(ctx context.Context, withPeriod bool) (*c
 		query.Set("orgId", strings.TrimSpace(whoami.Org.ID))
 	}
 
+	if err := c.get(ctx, "/alpha/billing/credits", query, out); err != nil {
+		return nil, err
+	}
+	return query, nil
+}
+
+func (c *commandCodeUsageClient) fetch(ctx context.Context, withPeriod bool) (*commandCodeUsage, error) {
 	usage := &commandCodeUsage{}
-	if err := c.get(ctx, "/alpha/billing/credits", query, &usage.credits); err != nil {
+	query, err := c.getCredits(ctx, &usage.credits)
+	if err != nil {
 		return nil, err
 	}
 	if usage.credits.Credits == nil {

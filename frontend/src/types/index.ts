@@ -1263,6 +1263,13 @@ export interface GrokModelDiagnostics {
   mappings: GrokModelDiagnosticItem[]
 }
 
+export interface UpstreamWalletSnapshot {
+  status: 'ok' | 'error' | 'unsupported'
+  balances?: { amount: number; currency: string }[]
+  checked_at?: string
+  updated_at?: string
+}
+
 export interface Account {
   id: number
   name: string
@@ -1281,6 +1288,7 @@ export interface Account {
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
     model_rate_limits?: Record<string, { rate_limited_at: string; rate_limit_reset_at: string }>
     antigravity_credits_overages?: Record<string, { activated_at: string; active_until: string }>
+    upstream_wallet?: UpstreamWalletSnapshot
     upstream_billing_probe_enabled?: boolean
     upstream_billing_rate_sync_enabled?: boolean
     upstream_billing_probe?: UpstreamBillingProbeSnapshot

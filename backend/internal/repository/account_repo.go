@@ -90,16 +90,18 @@ func ensureCodexFingerprintSeedSQL(extraExpr string) string {
 		"ELSE " + extraExpr + " END"
 }
 
-func stripCodexFingerprintSeedFromExtraUpdate(extra map[string]any) map[string]any {
+func stripManagedAccountExtraUpdate(extra map[string]any) map[string]any {
 	if extra == nil {
 		return nil
 	}
-	if _, exists := extra["codex_fingerprint_seed"]; !exists {
+	_, hasSeed := extra["codex_fingerprint_seed"]
+	_, hasWallet := extra["upstream_wallet"]
+	if !hasSeed && !hasWallet {
 		return extra
 	}
 	stripped := make(map[string]any, len(extra)-1)
 	for key, value := range extra {
-		if key == "codex_fingerprint_seed" {
+		if key == "codex_fingerprint_seed" || key == "upstream_wallet" {
 			continue
 		}
 		stripped[key] = value
@@ -143,13 +145,15 @@ func createAccountRecord(ctx context.Context, client *dbent.Client, account *ser
 		return service.ErrAccountNilInput
 	}
 
+	extra := copyJSONMap(normalizeJSONMap(account.Extra))
+	delete(extra, "upstream_wallet")
 	builder := client.Account.Create().
 		SetName(account.Name).
 		SetNillableNotes(account.Notes).
 		SetPlatform(account.Platform).
 		SetType(account.Type).
 		SetCredentials(normalizeJSONMap(account.Credentials)).
-		SetExtra(normalizeJSONMap(account.Extra)).
+		SetExtra(extra).
 		SetConcurrency(account.Concurrency).
 		SetPriority(account.Priority).
 		SetStatus(account.Status).
@@ -682,7 +686,8 @@ func lockAndMergeAccountProbeExtra(
 			extra -> 'opencode_go_usage_auto_refresh',
 			extra -> 'opencode_go_usage_snapshot',
 			extra -> 'grok_observed_models',
-			extra -> 'upstream_model_metadata'
+			extra -> 'upstream_model_metadata',
+			extra -> 'upstream_wallet'
 		FROM accounts
 		WHERE id = $1 AND deleted_at IS NULL
 		FOR NO KEY UPDATE
@@ -713,6 +718,7 @@ func lockAndMergeAccountProbeExtra(
 		currentOpenCodeSnapshot        []byte
 		currentGrokObservedModels      []byte
 		currentUpstreamModelMetadata   []byte
+		currentWallet                  []byte
 	)
 	if err := rows.Scan(
 		&identityUnchanged,
@@ -729,6 +735,7 @@ func lockAndMergeAccountProbeExtra(
 		&currentOpenCodeSnapshot,
 		&currentGrokObservedModels,
 		&currentUpstreamModelMetadata,
+		&currentWallet,
 	); err != nil {
 		return nil, err
 	}
@@ -748,6 +755,16 @@ func lockAndMergeAccountProbeExtra(
 		service.OpenCodeGoUsageSnapshotExtraKey,
 	} {
 		delete(extra, key)
+	}
+	delete(extra, "upstream_wallet")
+	if identityUnchanged {
+		wallet, ok, err := decodeAccountExtraJSON(currentWallet)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			extra["upstream_wallet"] = wallet
+		}
 	}
 	probeAccount := service.IsUpstreamBillingProbeIdentity(account.Platform, account.Type)
 	probeEnabled := false
@@ -931,7 +948,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 							AND (`+opencodeGoBaseURLMatchSQLPrefix+`$1::jsonb ->> 'base_url'`+opencodeGoBaseURLMatchSQLSuffix+`) IS NOT TRUE)
 					)
 				THEN COALESCE(extra, '{}'::jsonb)
-					- 'upstream_billing_probe'
+					- 'upstream_billing_probe' - 'upstream_wallet'
 					- 'opencode_go_usage_auto_refresh'
 					- 'opencode_go_usage_snapshot'
 					- 'ollama_cloud_usage_session'
@@ -950,7 +967,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 						)
 					)
 				THEN COALESCE(extra, '{}'::jsonb)
-					- 'upstream_billing_probe'
+					- 'upstream_billing_probe' - 'upstream_wallet'
 					- 'ollama_cloud_usage_session'
 					- 'ollama_cloud_usage_auto_refresh'
 					- 'ollama_cloud_usage_snapshot'
@@ -958,7 +975,7 @@ func (r *accountRepository) UpdateCredentials(ctx context.Context, id int64, cre
 				-- 身份变化，丢弃 stale 快照。
 				WHEN type = 'apikey'
 					AND credentials IS DISTINCT FROM $1::jsonb
-				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe'
+				THEN COALESCE(extra, '{}'::jsonb) - 'upstream_billing_probe' - 'upstream_wallet'
 				ELSE extra
 			END,
 			updated_at = NOW()
@@ -2793,7 +2810,7 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 	if scoped := r.accountTransactionScope(ctx); scoped != r {
 		return scoped.UpdateExtra(ctx, id, updates)
 	}
-	updates = stripCodexFingerprintSeedFromExtraUpdate(updates)
+	updates = stripManagedAccountExtraUpdate(updates)
 	if len(updates) == 0 {
 		return nil
 	}
@@ -3070,7 +3087,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	updates.Extra = stripCodexFingerprintSeedFromExtraUpdate(updates.Extra)
+	updates.Extra = stripManagedAccountExtraUpdate(updates.Extra)
 
 	setClauses := make([]string, 0, 8)
 	args := make([]any, 0, 8)
@@ -3190,7 +3207,7 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 				" AND COALESCE(btrim("+credentialPlaceholder+"::jsonb ->> 'account_mode') <> 'zen', true) IS NOT TRUE")
 	}
 
-	if len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || len(opencodeGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed {
+	if credentialPlaceholder != "" || len(updates.Extra) > 0 || len(ollamaGroupIdentityChanges) > 0 || len(opencodeGroupIdentityChanges) > 0 || ollamaProxyIdentityChanged != "" || updates.EnsureCodexFingerprintSeed {
 		extraExpression := "COALESCE(extra, '{}'::jsonb)"
 		if len(updates.Extra) > 0 {
 			payload, err := json.Marshal(updates.Extra)
@@ -3269,6 +3286,16 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 		if len(caseBranches) > 0 {
 			extraExpression = "CASE" + strings.Join(caseBranches, "") + " ELSE " + extraExpression + " END"
+		}
+		var walletIdentityChanges []string
+		if credentialPlaceholder != "" {
+			walletIdentityChanges = append(walletIdentityChanges, "(COALESCE(credentials,'{}'::jsonb) || "+credentialPlaceholder+"::jsonb) IS DISTINCT FROM credentials")
+		}
+		if ollamaProxyIdentityChanged != "" {
+			walletIdentityChanges = append(walletIdentityChanges, ollamaProxyIdentityChanged)
+		}
+		if len(walletIdentityChanges) > 0 {
+			extraExpression = "(" + extraExpression + ") - CASE WHEN " + strings.Join(walletIdentityChanges, " OR ") + " THEN ARRAY['upstream_wallet'] ELSE ARRAY[]::text[] END"
 		}
 		if updates.EnsureCodexFingerprintSeed {
 			extraExpression = ensureCodexFingerprintSeedSQL(extraExpression)

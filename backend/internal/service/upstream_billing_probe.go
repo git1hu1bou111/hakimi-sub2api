@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -317,8 +318,15 @@ func (s *UpstreamBillingProbeService) Start() {
 	}
 	s.started = true
 	s.wg.Add(1)
+	walletEnabled := os.Getenv("HAKIMI_UPSTREAM_BALANCE_POLL_DISABLED") != "1"
+	if walletEnabled {
+		s.wg.Add(1)
+	}
 	s.mu.Unlock()
 	go s.runLoop()
+	if walletEnabled {
+		go s.walletLoop()
+	}
 }
 
 func (s *UpstreamBillingProbeService) Stop() {
