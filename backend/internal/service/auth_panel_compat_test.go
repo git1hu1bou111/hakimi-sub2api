@@ -48,6 +48,18 @@ func (c *panelTestCache) GetRefreshToken(_ context.Context, key string) (*Refres
 	}
 	return nil, ErrRefreshTokenNotFound
 }
+func (c *panelTestCache) ConsumeRefreshToken(_ context.Context, key string) (*RefreshTokenData, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	token := c.data[key]
+	if token == nil {
+		return nil, ErrRefreshTokenNotFound
+	}
+	delete(c.data, key)
+	delete(c.ttls, key)
+	return token, nil
+}
+
 func (c *panelTestCache) DeleteRefreshToken(_ context.Context, key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
