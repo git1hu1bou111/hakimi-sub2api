@@ -103,6 +103,7 @@ type easyPayCustomMethod struct {
 // EasyPay-compatible gateways that support /api/pay/query:
 // queryEndpoint/queryApiPath, querySignType (MD5/RSA/RSA2), queryPrivateKey,
 // queryPublicKey, queryApiVersion.
+// refundSuccessCode optionally selects 0 or 1 for refund success.
 func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 	for _, k := range []string{"pid", "pkey", "apiBase", "notifyUrl", "returnUrl"} {
 		if strings.TrimSpace(config[k]) == "" {
@@ -138,6 +139,9 @@ func NewEasyPay(instanceID string, config map[string]string) (*EasyPay, error) {
 				return nil, fmt.Errorf("USDT recharge only supports USDT networks")
 			}
 		}
+	}
+	if code := strings.TrimSpace(cfg["refundSuccessCode"]); code != "" && code != "0" && code != "1" {
+		return nil, fmt.Errorf("easypay refundSuccessCode must be 0 or 1")
 	}
 	cfg["apiBase"] = normalizeEasyPayAPIBase(cfg["apiBase"])
 	return &EasyPay{
@@ -448,89 +452,179 @@ func (e *EasyPay) QueryOrder(ctx context.Context, tradeNo string) (*payment.Quer
 	return resp, err
 }
 
-// ConfirmNotification re-checks a successful callback against the upstream
-// order API before the order is fulfilled. QueryOrder already prefers the V2
-// signed endpoint and falls back to the legacy one. Gateways that do not
-// expose the EasyPay order-query API (bePusdt answers "404 page not found")
-// must not block fulfillment: an unavailable query is logged and the callback
-// is accepted, matching the fork's non-blocking upstreamVerifyMode=dry_run.
+// easyPayQueryResult is the normalized api.php?act=order answer. tradeNo is
+// the upstream trade number exactly as returned (empty when absent).
+type easyPayQueryResult struct {
+	status  string
+	money   string
+	tradeNo string
+}
+
+func (e *EasyPay) queryOrder(ctx context.Context, outTradeNo string) (*easyPayQueryResult, error) {
+	params := map[string]string{
+		"act": "order", "pid": e.config["pid"],
+		"key": e.config["pkey"], "out_trade_no": outTradeNo,
+	}
+	// 彩虹易支付 and ZPay read act=order parameters from $_GET only (a
+	// body-only request is answered with "No Act!"), while other forks read
+	// the form body; send them in both places.
+	query := url.Values{}
+	for k, v := range params {
+		query.Set(k, v)
+	}
+	body, err := e.post(ctx, e.apiBase()+"/api.php?"+query.Encode(), params)
+	if err != nil {
+		// The request URL carries the merchant key; never let it reach logs
+		// or audit records through *url.Error.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("easypay query: %w", err)
+	}
+	// Scalars are decoded leniently: PHP deployments commonly serialize
+	// integer columns as strings ("status":"1").
+	type easyPayQueryData struct {
+		TradeStatus *string         `json:"trade_status"`
+		Status      json.RawMessage `json:"status"`
+		Money       json.RawMessage `json:"money"`
+		TradeNo     json.RawMessage `json:"trade_no"`
+		OutTradeNo  json.RawMessage `json:"out_trade_no"`
+	}
+	var resp struct {
+		easyPayQueryData
+		Code any              `json:"code"`
+		Msg  string           `json:"msg"`
+		Data easyPayQueryData `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("easypay parse query: %w", err)
+	}
+	// An explicit failure code wins over any paid-looking status field that
+	// may accompany it.
+	if resp.Code != nil && !easyPayResponseCodeIsSuccess(resp.Code, easypayCodeSuccess) {
+		msg := strings.TrimSpace(resp.Msg)
+		if msg == "" {
+			msg = summarizeEasyPayResponse(body)
+		}
+		return nil, fmt.Errorf("easypay query failed: %s", msg)
+	}
+	// When the upstream echoes the order identity it must be this order; some
+	// implementations silently ignore unknown lookup parameters.
+	if echoed := easyPayJSONScalar(pickEasyPayJSON(resp.OutTradeNo, resp.Data.OutTradeNo)); echoed != "" && echoed != strings.TrimSpace(outTradeNo) {
+		return nil, fmt.Errorf("easypay query out_trade_no mismatch: expected %s, got %s", strings.TrimSpace(outTradeNo), echoed)
+	}
+
+	status := payment.ProviderStatusPending
+	if resp.TradeStatus != nil {
+		if *resp.TradeStatus == tradeStatusSuccess {
+			status = payment.ProviderStatusPaid
+		}
+	} else if resp.Data.TradeStatus != nil {
+		if *resp.Data.TradeStatus == tradeStatusSuccess {
+			status = payment.ProviderStatusPaid
+		}
+	} else if raw := pickEasyPayJSON(resp.Status, resp.Data.Status); raw != nil {
+		if easyPayJSONScalar(raw) == strconv.Itoa(easypayStatusPaid) {
+			status = payment.ProviderStatusPaid
+		}
+	}
+
+	return &easyPayQueryResult{
+		status:  status,
+		money:   easyPayJSONScalar(pickEasyPayJSON(resp.Money, resp.Data.Money)),
+		tradeNo: easyPayJSONScalar(pickEasyPayJSON(resp.TradeNo, resp.Data.TradeNo)),
+	}, nil
+}
+
+// ConfirmNotification checks a verified success notification against the
+// upstream order before it is fulfilled, so crediting follows the gateway's
+// own order state (paid, amount, trade_no). The query is sent to this
+// instance's own apiBase with its own credentials.
 func (e *EasyPay) ConfirmNotification(ctx context.Context, n *payment.PaymentNotification) error {
 	if n == nil || n.Status != payment.NotificationStatusSuccess {
 		return nil
 	}
-	if e.config["usdtRecharge"] == "true" {
+	if e.config["usdtRecharge"] == "true" || strings.TrimSpace(e.config["upstreamVerifyURL"]) != "" && e.upstreamVerifyMode() != "off" {
 		return e.verifyUpstreamOrder(ctx, map[string]string{"trade_no": n.TradeNo, "out_trade_no": n.OrderID, "money": strconv.FormatFloat(n.Amount, 'f', -1, 64)})
 	}
-	result, err := e.QueryOrder(ctx, n.OrderID)
-	if err != nil {
-		slog.Warn("easypay confirm: upstream order query unavailable, skip confirmation",
-			"order", n.OrderID, "error", err)
+	if e.shouldUseV2Query() {
+		result, err := e.QueryOrder(ctx, n.OrderID)
+		if err != nil {
+			return fmt.Errorf("easypay confirm: %w", err)
+		}
+		if result.Status != payment.ProviderStatusPaid || math.Abs(result.Amount-n.Amount) > easypayAmountTolerance {
+			return fmt.Errorf("easypay confirm: V2 paid order or amount mismatch")
+		}
+		if result.TradeNo != "" {
+			if n.TradeNo != "" && n.TradeNo != result.TradeNo {
+				return fmt.Errorf("easypay confirm: trade_no mismatch")
+			}
+			n.TradeNo = result.TradeNo
+		}
 		return nil
 	}
-	if result.Status != payment.ProviderStatusPaid {
+	result, err := e.queryOrder(ctx, n.OrderID)
+	if err != nil {
+		return fmt.Errorf("easypay confirm: %w", err)
+	}
+	if result.status != payment.ProviderStatusPaid {
 		return fmt.Errorf("easypay confirm: upstream reports order %s as not paid", n.OrderID)
 	}
-	if math.Abs(result.Amount-n.Amount) > easypayAmountTolerance {
-		return fmt.Errorf("easypay confirm: amount mismatch: notified %v, upstream %v", n.Amount, result.Amount)
+	queriedAmount, err := strconv.ParseFloat(result.money, 64)
+	if err != nil || math.Abs(queriedAmount-n.Amount) > easypayAmountTolerance {
+		return fmt.Errorf("easypay confirm: amount mismatch: notified %v, upstream %q", n.Amount, result.money)
 	}
-	if result.TradeNo != "" {
-		if n.TradeNo != "" && n.TradeNo != result.TradeNo {
-			return fmt.Errorf("easypay confirm: trade_no mismatch: notified %s, upstream %s", n.TradeNo, result.TradeNo)
+	if result.tradeNo != "" {
+		if n.TradeNo != "" && n.TradeNo != result.tradeNo {
+			return fmt.Errorf("easypay confirm: trade_no mismatch: notified %s, upstream %s", n.TradeNo, result.tradeNo)
 		}
-		n.TradeNo = result.TradeNo
+		n.TradeNo = result.tradeNo
+	}
+	return nil
+}
+
+func easyPayJSONScalar(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return strings.TrimSpace(str)
+	}
+	var num json.Number
+	if err := json.Unmarshal(raw, &num); err == nil {
+		return num.String()
+	}
+	return ""
+}
+
+// pickEasyPayJSON returns the top-level field when present, otherwise the
+// nested data field. JSON null counts as absent.
+func pickEasyPayJSON(top, nested json.RawMessage) json.RawMessage {
+	if len(top) > 0 && string(top) != "null" {
+		return top
+	}
+	if len(nested) > 0 && string(nested) != "null" {
+		return nested
 	}
 	return nil
 }
 
 func (e *EasyPay) queryOrderLegacy(ctx context.Context, tradeNo string) (*payment.QueryOrderResponse, error) {
-	params := map[string]string{
-		"act": "order", "pid": e.config["pid"],
-		"key": e.config["pkey"], "out_trade_no": tradeNo,
-	}
+	params := map[string]string{"act": "order", "pid": e.config["pid"], "key": e.config["pkey"], "out_trade_no": tradeNo}
 	endpoint := e.apiBase() + "/api.php"
-	body, err := e.get(ctx, endpoint, params)
-	var getResp *payment.QueryOrderResponse
-	if err == nil {
-		resp, parseErr := parseEasyPayQueryOrderResponse(body, tradeNo, e.MerchantIdentityMetadata())
-		if parseErr == nil {
-			if resp.Status == payment.ProviderStatusPaid || easyPayQueryResponseCodeAllowsStatusFromBody(body) {
-				return resp, nil
-			}
-			getResp = resp
-			// A few EasyPay-compatible gateways document GET but return a
-			// generic JSON failure for GET while POST still works. Fall back to
-			// POST on a non-success GET response; if POST is also unavailable,
-			// keep the safe pending result from GET.
-			err = fmt.Errorf("non-success response")
-		} else {
-			err = parseErr
+	if body, err := e.get(ctx, endpoint, params); err == nil {
+		if result, err := parseEasyPayQueryOrderResponse(body, tradeNo, e.MerchantIdentityMetadata()); err == nil {
+			return result, nil
 		}
 	}
-	// Some EasyPay-compatible gateways accept only form POST despite
-	// documenting api.php?act=order as a URL query. Keep a compatibility
-	// fallback for those variants while preferring the documented GET shape.
-	firstErr := err
-	body, err = e.post(ctx, endpoint, params)
+	// Some providers only implement the form POST variant of the order query.
+	body, err := e.post(ctx, endpoint, params)
 	if err != nil {
-		if getResp != nil {
-			return getResp, nil
-		}
-		if firstErr != nil {
-			return nil, fmt.Errorf("easypay query: GET failed: %v; POST failed: %w", firstErr, err)
-		}
 		return nil, fmt.Errorf("easypay query: %w", err)
 	}
-	resp, err := parseEasyPayQueryOrderResponse(body, tradeNo, e.MerchantIdentityMetadata())
-	if err != nil {
-		if getResp != nil {
-			return getResp, nil
-		}
-		if firstErr != nil {
-			return nil, fmt.Errorf("easypay parse query: GET failed: %v; POST parse failed: %w", firstErr, err)
-		}
-		return nil, fmt.Errorf("easypay parse query: %w", err)
-	}
-	return resp, nil
+	return parseEasyPayQueryOrderResponse(body, tradeNo, e.MerchantIdentityMetadata())
 }
 
 func (e *EasyPay) shouldUseV2Query() bool {
@@ -716,16 +810,6 @@ func isEasyPayNoFallbackQueryError(err error) bool {
 	return errors.As(err, &noFallback)
 }
 
-func easyPayQueryResponseCodeAllowsStatusFromBody(body []byte) bool {
-	var resp struct {
-		Code any `json:"code"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return false
-	}
-	return easyPayQueryResponseCodeAllowsStatus(resp.Code)
-}
-
 func parseEasyPayQueryOrderResponse(body []byte, tradeNo string, metadata map[string]string) (*payment.QueryOrderResponse, error) {
 	type easyPayQueryData struct {
 		TradeStatus any `json:"trade_status"`
@@ -750,23 +834,24 @@ func parseEasyPayQueryOrderResponse(body []byte, tradeNo string, metadata map[st
 	if err := validateEasyPayReturnedOutTradeNo(tradeNo, resp.OutTradeNo, resp.Data.OutTradeNo); err != nil {
 		return nil, err
 	}
+	if !easyPayQueryResponseCodeAllowsStatus(resp.Code) {
+		return nil, fmt.Errorf("easypay query failed: %s", resp.Msg)
+	}
 	status := payment.ProviderStatusPending
-	if easyPayQueryResponseCodeAllowsStatus(resp.Code) {
-		if tradeStatus, ok := easyPayAnyString(resp.TradeStatus); ok {
-			if easyPayTradeStatusIsPaid(tradeStatus) {
-				status = payment.ProviderStatusPaid
-			}
-		} else if tradeStatus, ok := easyPayAnyString(resp.Data.TradeStatus); ok {
-			if easyPayTradeStatusIsPaid(tradeStatus) {
-				status = payment.ProviderStatusPaid
-			}
-		} else if numericStatus, ok := easyPayAnyInt(resp.Status); ok {
-			if numericStatus == easypayStatusPaid {
-				status = payment.ProviderStatusPaid
-			}
-		} else if numericStatus, ok := easyPayAnyInt(resp.Data.Status); ok && numericStatus == easypayStatusPaid {
+	if tradeStatus, ok := easyPayAnyString(resp.TradeStatus); ok {
+		if easyPayTradeStatusIsPaid(tradeStatus) {
 			status = payment.ProviderStatusPaid
 		}
+	} else if tradeStatus, ok := easyPayAnyString(resp.Data.TradeStatus); ok {
+		if easyPayTradeStatusIsPaid(tradeStatus) {
+			status = payment.ProviderStatusPaid
+		}
+	} else if numericStatus, ok := easyPayAnyInt(resp.Status); ok {
+		if numericStatus == easypayStatusPaid {
+			status = payment.ProviderStatusPaid
+		}
+	} else if numericStatus, ok := easyPayAnyInt(resp.Data.Status); ok && numericStatus == easypayStatusPaid {
+		status = payment.ProviderStatusPaid
 	}
 
 	money := ""
@@ -887,7 +972,7 @@ func easyPayQueryResponseCodeAllowsStatus(code any) bool {
 	if code == nil {
 		return true
 	}
-	return easyPayResponseCodeIsSuccess(code)
+	return easyPayResponseCodeIsSuccess(code, easypayCodeSuccess)
 }
 
 func easyPayV2ResponseCodeIsSuccess(code any) bool {
@@ -1151,6 +1236,12 @@ func (e *EasyPay) queryUpstreamOrderReason(ctx context.Context, verifyURL, trade
 }
 
 func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payment.RefundResponse, error) {
+	// Compatible gateways disagree on refund codes. Keep the existing default
+	// unless this instance explicitly selects a zero-success refund protocol.
+	successCode := easypayCodeSuccess
+	if strings.TrimSpace(e.config["refundSuccessCode"]) == "0" {
+		successCode = 0
+	}
 	attempts := e.refundAttempts(req)
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("easypay refund missing order identifier")
@@ -1161,7 +1252,7 @@ func (e *EasyPay) Refund(ctx context.Context, req payment.RefundRequest) (*payme
 		if err != nil {
 			return nil, fmt.Errorf("easypay refund request: %w", err)
 		}
-		if err := parseEasyPayRefundResponse(status, body); err != nil {
+		if err := parseEasyPayRefundResponse(status, body, successCode); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -1218,7 +1309,7 @@ func isEasyPayRefundOrderNotFound(err error) bool {
 		strings.Contains(lower, "not exist")
 }
 
-func parseEasyPayRefundResponse(status int, body []byte) error {
+func parseEasyPayRefundResponse(status int, body []byte, successCode int) error {
 	summary := summarizeEasyPayResponse(body)
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return fmt.Errorf("easypay refund HTTP %d: %s", status, summary)
@@ -1242,7 +1333,7 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return fmt.Errorf("easypay refund non-JSON response (HTTP %d): %s", status, summary)
 	}
-	if !easyPayResponseCodeIsSuccess(resp.Code) {
+	if !easyPayResponseCodeIsSuccess(resp.Code, successCode) {
 		msg := strings.TrimSpace(resp.Msg)
 		if msg == "" {
 			msg = summary
@@ -1252,18 +1343,18 @@ func parseEasyPayRefundResponse(status int, body []byte) error {
 	return nil
 }
 
-func easyPayResponseCodeIsSuccess(code any) bool {
+func easyPayResponseCodeIsSuccess(code any, successCode int) bool {
 	switch v := code.(type) {
 	case float64:
-		return int(v) == easypayCodeSuccess
+		return v == float64(successCode)
 	case int:
-		return v == easypayCodeSuccess
+		return v == successCode
 	case string:
 		n, err := strconv.Atoi(strings.TrimSpace(v))
-		return err == nil && n == easypayCodeSuccess
+		return err == nil && n == successCode
 	case json.Number:
 		n, err := strconv.Atoi(strings.TrimSpace(v.String()))
-		return err == nil && n == easypayCodeSuccess
+		return err == nil && n == successCode
 	default:
 		return false
 	}
