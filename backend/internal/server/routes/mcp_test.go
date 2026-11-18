@@ -138,7 +138,7 @@ func (r *mcpRouteAPIKeyRepo) GetByID(context.Context, int64) (*service.APIKey, e
 func TestMCPDispatchRetainsRealAPIKeyOwnershipAndAudit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	h := mcpRouteHandlers()
-	h.APIKey = handler.NewAPIKeyHandler(service.NewAPIKeyService(&mcpRouteAPIKeyRepo{}, nil, nil, nil, nil, nil, nil), nil, nil)
+	h.APIKey = handler.NewAPIKeyHandler(service.NewAPIKeyService(&mcpRouteAPIKeyRepo{}, nil, nil, nil, nil, nil, nil), nil, &config.Config{})
 	for _, userID := range []int64{7, 8} {
 		principal := &service.MCPPrincipal{GrantID: "test", UserID: userID, Role: service.RoleUser, Scope: service.MCPScopeUser, ReadOnly: true}
 		auditCalls := 0
