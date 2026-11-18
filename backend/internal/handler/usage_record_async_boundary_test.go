@@ -21,7 +21,7 @@ func TestUsageRecordTasksDoNotCaptureGinContext(t *testing.T) {
 	require.NoError(t, err)
 	files := token.NewFileSet()
 	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") {
+		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(filepath.Base(path), "._") {
 			continue
 		}
 		file, err := parser.ParseFile(files, path, nil, parser.SkipObjectResolution)

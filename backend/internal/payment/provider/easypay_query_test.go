@@ -71,9 +71,7 @@ func TestEasyPayQueryOrderStatusMapping(t *testing.T) {
 		{
 			name:        "non success code does not trust paid numeric status",
 			body:        `{"code":0,"status":1,"money":"3.21"}`,
-			wantStatus:  payment.ProviderStatusPending,
-			wantTradeNo: orderID,
-			wantAmount:  3.21,
+			wantErr:     true,
 		},
 		{
 			name:        "legacy numeric non paid status is pending",

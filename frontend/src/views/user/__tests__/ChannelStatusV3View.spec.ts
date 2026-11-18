@@ -109,7 +109,7 @@ describe('Channel status platform sections', () => {
     vi.mocked(api.getMatrix).mockResolvedValue(response(items))
     const view = render()
     await flushPromises()
-    expect(view.findAll('section[data-platform]').map(s => s.attributes('data-platform'))).toEqual(['openai', 'deepseek', 'kimi', 'new-provider'])
+    expect(view.findAll('section[data-platform]').map(s => s.attributes('data-platform'))).toEqual(['openai', 'domestic-models', 'new-provider'])
     expect(view.get('[data-platform="new-provider"] h2').text()).toContain('new-provider')
     const ids = view.findAllComponents(ChannelMonitorV3Card).map(c => c.props('row').group_id)
     expect(ids.sort()).toEqual([1, 2, 3, 4])
