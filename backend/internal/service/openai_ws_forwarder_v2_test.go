@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -17,21 +18,26 @@ import (
 // tier separate from response.completed.service_tier for usage-time billing.
 func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv(downstreamTierGroupEnv, "138")
 
 	cases := []struct {
-		name        string
-		requestTier string
-		stream      bool
+		name, requestTier, upstreamTier, outboundTier, clientTier string
+		groupID                                                   int64
+		stream                                                    bool
 	}{
-		{name: "priority_nonstream", requestTier: "priority", stream: false},
-		{name: "fast_stream", requestTier: "fast", stream: true},
+		{"priority_nonstream", "priority", "default", "priority", "default", 1, false},
+		{"fast_stream", "fast", "default", "priority", "default", 1, true},
+		{"uf_nonstream", "ultrafast", "ultrafast", "ultrafast", "default", 138, false},
+		{"uf_stream", "ultrafast", "ultrafast", "ultrafast", "default", 138, true},
+		{"other_group", "ultrafast", "ultrafast", "ultrafast", "ultrafast", 2, true},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(rec)
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			ctx := context.WithValue(context.Background(), ctxkey.Group, &Group{ID: tc.groupID, Platform: PlatformOpenAI})
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
 			c.Request.Header.Set("User-Agent", "unit-test-agent/1.0")
 
 			cfg := &config.Config{}
@@ -50,7 +56,7 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 
 			captureConn := &openAIWSCaptureConn{
 				events: [][]byte{
-					[]byte(`{"type":"response.completed","response":{"id":"resp_tier_v2","model":"gpt-5.5","status":"completed","service_tier":"default","usage":{"input_tokens":1,"output_tokens":1}}}`),
+					[]byte(fmt.Sprintf(`{"type":"response.completed","response":{"object":"response","id":"resp_tier_v2","model":"gpt-5.5","status":"completed","service_tier":%q,"usage":{"input_tokens":1,"output_tokens":1}}}`, tc.upstreamTier)),
 				},
 			}
 			captureDialer := &openAIWSCaptureDialer{conn: captureConn}
@@ -81,17 +87,17 @@ func TestForwardOpenAIWSV2_KeepsOutboundAndObservedServiceTiersSeparate(t *testi
 				`{"model":"gpt-5.5","stream":%t,"service_tier":%q,"input":[{"type":"input_text","text":"hi"}]}`,
 				tc.stream, tc.requestTier,
 			))
-			result, err := svc.Forward(context.Background(), c, account, body)
+			result, err := svc.Forward(ctx, c, account, body)
 			require.NoError(t, err)
 			require.NotNil(t, result)
 			require.True(t, result.OpenAIWSMode, "must take HTTP POST → forwardOpenAIWSV2, not HTTP fallback")
 			require.Equal(t, tc.stream, result.Stream)
 			require.Equal(t, "resp_tier_v2", result.RequestID)
 			require.NotNil(t, result.ServiceTier)
-			require.Equal(t, "priority", *result.ServiceTier)
-			require.Equal(t, "default", result.UpstreamResponseServiceTier)
-			require.Equal(t, "priority", captureConn.lastWrite["service_tier"],
-				"outbound WS payload still carries the requested Fast tier")
+			require.Equal(t, tc.outboundTier, *result.ServiceTier)
+			require.Equal(t, normalizeObservedOpenAIServiceTier(tc.upstreamTier), result.UpstreamResponseServiceTier)
+			require.Equal(t, tc.outboundTier, captureConn.lastWrite["service_tier"])
+			require.Contains(t, rec.Body.String(), fmt.Sprintf(`"service_tier":%q`, tc.clientTier))
 		})
 	}
 }

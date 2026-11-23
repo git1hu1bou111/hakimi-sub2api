@@ -456,6 +456,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	}
 
 	flushBatchSize := s.openAIWSEventFlushBatchSize()
+	defaultDownstreamTier := defaultHTTPDownstreamTier(c)
 	flushInterval := s.openAIWSEventFlushInterval()
 	pendingFlushEvents := 0
 	lastFlushAt := time.Now()
@@ -475,6 +476,9 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 	emitStreamMessage := func(message []byte, forceFlush bool) {
 		if clientDisconnected {
 			return
+		}
+		if defaultDownstreamTier {
+			message = rewriteDownstreamUltraFastTier(message)
 		}
 		frame := make([]byte, 0, len(message)+8)
 		frame = append(frame, "data: "...)
@@ -814,6 +818,9 @@ readLoop:
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
 		}
 
+		if defaultDownstreamTier {
+			finalResponse = rewriteDownstreamUltraFastTier(finalResponse)
+		}
 		c.Data(http.StatusOK, "application/json", finalResponse)
 	} else {
 		flushStreamWriter(true)

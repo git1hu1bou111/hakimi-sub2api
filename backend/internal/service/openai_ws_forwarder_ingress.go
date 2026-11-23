@@ -483,10 +483,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}, nil
 	}
 
+	defaultDownstreamTier := useDefaultDownstreamTier(ctx)
 	writeClientMessage := func(message []byte) error {
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
 		message = restoreCodexToolNamesFromContext(c, message)
+		if defaultDownstreamTier {
+			message = rewriteDownstreamUltraFastTier(message)
+		}
 		return clientConn.Write(writeCtx, coderws.MessageText, message)
 	}
 

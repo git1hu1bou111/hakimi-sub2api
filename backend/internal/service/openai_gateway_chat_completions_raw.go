@@ -401,6 +401,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
 
+	defaultTier := defaultHTTPDownstreamTier(c)
 	writeLine := func(line string) {
 		if clientDisconnected {
 			return
@@ -458,6 +459,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
 		line = s.replaceModelInSSELine(line, upstreamModel, originalModel)
+		if defaultTier {
+			line = downstreamTierSSELine(line)
+		}
 		writeLine(line)
 		// 不逐行 flush：scanner 下次向上游读取前统一 flush（见 flushBeforeUpstreamRead）。
 		flushPending = true
@@ -636,7 +640,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	_, _ = c.Writer.Write(downstreamHTTPResponseBody(c, respBody, false))
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,

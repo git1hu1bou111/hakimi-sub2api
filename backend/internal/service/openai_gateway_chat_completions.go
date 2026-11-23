@@ -755,6 +755,9 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// writeContentType 仅在头不存在时才设置，无法覆盖。这里显式 Set 强制改回 JSON，
 	// 否则下游"看头判流式"的中间层（如 new-api）会把本应聚合的 JSON 当成 SSE 处理。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if defaultHTTPDownstreamTier(c) && chatResp.ServiceTier == OpenAIFastTierUltrafast {
+		chatResp.ServiceTier = "default"
+	}
 	c.JSON(http.StatusOK, chatResp)
 
 	result := &OpenAIForwardResult{
@@ -837,6 +840,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
+	defaultTier := defaultHTTPDownstreamTier(c)
 	state := apicompat.NewResponsesEventToChatState()
 	state.Model = originalModel
 	state.XAIServerSideSearch = account != nil && account.IsGrok()
@@ -1024,6 +1028,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if !clientDisconnected {
 			for _, chunk := range chunks {
 				refusalDetector.ObserveChatChunk(chunk)
+				if defaultTier && chunk.ServiceTier == OpenAIFastTierUltrafast {
+					chunk.ServiceTier = "default"
+				}
 				sse, err := apicompat.ChatChunkToSSE(chunk)
 				if err != nil {
 					logger.L().Warn("openai chat_completions stream: failed to marshal chunk",
@@ -1081,6 +1088,9 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if finalChunks := apicompat.FinalizeResponsesChatStream(state); len(finalChunks) > 0 && !clientDisconnected {
 			for _, chunk := range finalChunks {
 				refusalDetector.ObserveChatChunk(chunk)
+				if defaultTier && chunk.ServiceTier == OpenAIFastTierUltrafast {
+					chunk.ServiceTier = "default"
+				}
 				sse, err := apicompat.ChatChunkToSSE(chunk)
 				if err != nil {
 					continue

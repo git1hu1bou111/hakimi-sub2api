@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -976,6 +977,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_DedicatedModeDoe
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeRelaysByCaddyAdapter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv(downstreamTierGroupEnv, "138")
 
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -992,7 +994,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 
 	upstreamConn := &openAIWSCaptureConn{
 		events: [][]byte{
-			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_turn_1","model":"gpt-5.1","output":[{"id":"ig_passthrough_1","type":"image_generation_call","status":"generating","result":"final-image"}],"usage":{"input_tokens":2,"output_tokens":3}}}`),
+			[]byte(`{"type":"response.completed","response":{"id":"resp_passthrough_turn_1","service_tier":"ultrafast","model":"gpt-5.1","output":[{"id":"ig_passthrough_1","type":"image_generation_call","status":"generating","result":"final-image"}],"usage":{"input_tokens":2,"output_tokens":3}}}`),
 		},
 	}
 	captureDialer := &openAIWSCaptureDialer{conn: upstreamConn}
@@ -1045,7 +1047,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
-		req := r.Clone(r.Context())
+		ctx := context.WithValue(r.Context(), ctxkey.Group, &Group{ID: 138, Platform: PlatformOpenAI})
+		req := r.Clone(ctx)
 		req.Header = req.Header.Clone()
 		req.Header.Set("User-Agent", "unit-test-agent/1.0")
 		ginCtx.Request = req
@@ -1062,7 +1065,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(ctx, ginCtx, conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -1085,6 +1088,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 	require.NoError(t, readErr)
 	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
 	require.Equal(t, "resp_passthrough_turn_1", gjson.GetBytes(event, "response.id").String())
+	require.Equal(t, "default", gjson.GetBytes(event, "response.service_tier").String())
 	require.Equal(t, "completed", gjson.GetBytes(event, "response.output.0.status").String())
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
 
@@ -1108,6 +1112,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughModeR
 		require.Equal(t, 3, result.Usage.OutputTokens)
 		require.NotNil(t, result.ServiceTier)
 		require.Equal(t, "priority", *result.ServiceTier)
+		require.Equal(t, normalizeObservedOpenAIServiceTier("ultrafast"), result.UpstreamResponseServiceTier)
 		require.NotNil(t, result.ReasoningEffort)
 		require.Equal(t, "high", *result.ReasoningEffort)
 	case <-time.After(2 * time.Second):
@@ -1394,6 +1399,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_PassthroughHeade
 
 func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRelaysHTTPStream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	t.Setenv(downstreamTierGroupEnv, "138")
 
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -1413,7 +1419,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}, "x-request-id": []string{"rid_bridge_1"}},
 			Body: io.NopCloser(strings.NewReader(
 				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
-					"data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_http_bridge_1\",\"output\":[{\"id\":\"ig_bridge_1\",\"type\":\"image_generation_call\",\"status\":\"in_progress\",\"result\":\"final-image\"}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n" +
+					"data: {\"type\":\"response.done\",\"response\":{\"id\":\"resp_http_bridge_1\",\"service_tier\":\"ultrafast\",\"output\":[{\"id\":\"ig_bridge_1\",\"type\":\"image_generation_call\",\"status\":\"in_progress\",\"result\":\"final-image\"}],\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"input_tokens_details\":{\"cached_tokens\":1}}}}\n\n" +
 					"data: [DONE]\n\n",
 			)),
 		},
@@ -1466,7 +1472,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 
 		rec := httptest.NewRecorder()
 		ginCtx, _ := gin.CreateTestContext(rec)
-		req := r.Clone(r.Context())
+		ctx := context.WithValue(r.Context(), ctxkey.Group, &Group{ID: 138, Platform: PlatformOpenAI})
+		req := r.Clone(ctx)
 		req.Header = req.Header.Clone()
 		req.Header.Set("User-Agent", "unit-test-agent/1.0")
 		ginCtx.Request = req
@@ -1483,7 +1490,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 			return
 		}
 
-		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(r.Context(), ginCtx, conn, account, "sk-test", firstMessage, hooks)
+		serverErrCh <- svc.ProxyResponsesWebSocketFromClient(ctx, ginCtx, conn, account, "sk-test", firstMessage, hooks)
 	}))
 	defer wsServer.Close()
 
@@ -1498,7 +1505,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
 	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{
 		"type":"response.create","model":"gpt-5.1","stream":false,
-		"parallel_tool_calls":true,
+		"parallel_tool_calls":true,"service_tier":"ultrafast",
 		"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}
 	}`))
 	cancelWrite()
@@ -1517,6 +1524,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 	require.NoError(t, readErr2)
 	require.Equal(t, "response.done", gjson.GetBytes(event2, "type").String())
 	require.Equal(t, "resp_http_bridge_1", gjson.GetBytes(event2, "response.id").String())
+	require.Equal(t, "default", gjson.GetBytes(event2, "response.service_tier").String())
 	require.Equal(t, "completed", gjson.GetBytes(event2, "response.output.0.status").String())
 
 	_ = clientConn.Close(coderws.StatusNormalClosure, "done")
@@ -1531,6 +1539,8 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 	select {
 	case result := <-resultCh:
 		require.Equal(t, "resp_http_bridge_1", result.RequestID)
+		require.Equal(t, "ultrafast", optionalStringValue(result.ServiceTier))
+		require.Equal(t, normalizeObservedOpenAIServiceTier("ultrafast"), result.UpstreamResponseServiceTier)
 		require.True(t, result.OpenAIWSMode)
 		require.Equal(t, 2, result.Usage.InputTokens)
 		require.Equal(t, 1, result.Usage.OutputTokens)
@@ -1542,6 +1552,7 @@ func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_HTTPBridgeModeRe
 
 	require.NotNil(t, upstream.lastReq, "http_bridge 模式应调用 HTTP 上游")
 	require.Equal(t, "true", upstream.lastReq.Header.Get(responsesLiteHeader))
+	require.Equal(t, "ultrafast", gjson.GetBytes(upstream.lastBody, "service_tier").String())
 	require.True(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Exists())
 	require.False(t, gjson.GetBytes(upstream.lastBody, "parallel_tool_calls").Bool())
 }

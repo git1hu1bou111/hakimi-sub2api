@@ -53,6 +53,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
 	}
+	defaultTier := defaultHTTPDownstreamTier(c)
 	firstOutputTimeout := time.Duration(0)
 	if account != nil && account.Platform == PlatformOpenAI {
 		firstOutputTimeout = s.openAIFirstOutputTimeout(reasoningEffort)
@@ -764,6 +765,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					shouldFlush = true
 				}
 				eventShouldFlush = eventShouldFlush || shouldFlush
+				if defaultTier {
+					line = downstreamTierSSELine(line)
+				}
 				if _, err := writePendingString(line); err != nil {
 					handlePendingWriteError(err)
 				} else if _, err := writePendingString("\n"); err != nil {
@@ -1799,8 +1803,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
-		c.Data(resp.StatusCode, contentType, body)
+	downstreamBody := downstreamHTTPResponseBody(c, body, false)
+	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, downstreamBody) {
+		c.Data(resp.StatusCode, contentType, downstreamBody)
 	}
 
 	return &openaiNonStreamingResult{
@@ -1911,11 +1916,12 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 			contentType = "text/event-stream"
 		}
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+	downstreamBody := downstreamHTTPResponseBody(c, body, !ok)
+	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, downstreamBody) {
 		// 上游的 Content-Type（text/event-stream）已复制到响应头，而 c.Data
 		// 不会覆盖已存在的 Content-Type，这里需显式设置为聚合后的类型。
 		c.Writer.Header().Set("Content-Type", contentType)
-		c.Data(resp.StatusCode, contentType, body)
+		c.Data(resp.StatusCode, contentType, downstreamBody)
 	}
 
 	return &openaiNonStreamingResult{

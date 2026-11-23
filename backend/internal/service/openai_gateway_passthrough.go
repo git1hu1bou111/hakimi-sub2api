@@ -1947,6 +1947,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	// upstream created_at so a synthesized response.failed matches the stream.
 	var createdAtTracker responsesCreatedAtStamper
 	upstreamRequestID := strings.TrimSpace(resp.Header.Get("x-request-id"))
+	defaultTier := defaultHTTPDownstreamTier(c)
 	// pendingLines 在首个可见输出前保留前导事件，确保无输出失败仍可安全 failover。
 	pendingLines := make([]string, 0, 8)
 
@@ -2249,6 +2250,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		}
 
 		if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
+			if defaultTier {
+				line = downstreamTierSSELine(line)
+			}
 			if !clientOutputStarted && !lineStartsClientOutput {
 				pendingLines = append(pendingLines, line)
 				continue
@@ -2413,8 +2417,9 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
-		c.Data(resp.StatusCode, contentType, body)
+	downstreamBody := downstreamHTTPResponseBody(c, body, false)
+	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, downstreamBody) {
+		c.Data(resp.StatusCode, contentType, downstreamBody)
 	}
 	return &openaiNonStreamingResultPassthrough{
 		OpenAIUsage:      usage,
@@ -2495,11 +2500,12 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 			contentType = "text/event-stream"
 		}
 	}
-	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
+	downstreamBody := downstreamHTTPResponseBody(c, body, !ok)
+	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, downstreamBody) {
 		// 上游的 Content-Type（text/event-stream）已复制到响应头，而 c.Data
 		// 不会覆盖已存在的 Content-Type，这里需显式设置为聚合后的类型。
 		c.Writer.Header().Set("Content-Type", contentType)
-		c.Data(resp.StatusCode, contentType, body)
+		c.Data(resp.StatusCode, contentType, downstreamBody)
 	}
 
 	return &openaiNonStreamingResultPassthrough{

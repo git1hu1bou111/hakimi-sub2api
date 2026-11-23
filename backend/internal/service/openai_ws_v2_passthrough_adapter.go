@@ -27,8 +27,9 @@ type openAIWSClientFrameConn struct {
 	waitingForNextTurn   atomic.Bool
 	// The relay observes upstream payloads, while clients must keep seeing the
 	// model identifier they supplied for the current turn.
-	restoreResponseModel func([]byte) []byte
-	restoreToolNames     func([]byte) []byte
+	restoreResponseModel  func([]byte) []byte
+	restoreToolNames      func([]byte) []byte
+	defaultDownstreamTier bool
 }
 
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
@@ -651,6 +652,9 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 			payload = c.restoreToolNames(payload)
 		}
 	}
+	if c.defaultDownstreamTier && (msgType == coderws.MessageText || msgType == coderws.MessageBinary) {
+		payload = rewriteDownstreamUltraFastTier(payload)
+	}
 	return c.conn.Write(ctx, msgType, payload)
 }
 
@@ -954,10 +958,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
 	clientFrameConn := &openAIWSClientFrameConn{
-		conn:                 clientConn,
-		controlCtx:           ctx,
-		interTurnIdleTimeout: s.openAIWSIngressInterTurnIdleTimeout(),
-		interTurnStarted:     make(chan struct{}, 1),
+		conn:                  clientConn,
+		controlCtx:            ctx,
+		defaultDownstreamTier: useDefaultDownstreamTier(ctx),
+		interTurnIdleTimeout:  s.openAIWSIngressInterTurnIdleTimeout(),
+		interTurnStarted:      make(chan struct{}, 1),
 		restoreResponseModel: func(payload []byte) []byte {
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			if !openAIWSEventMayContainModel(eventType) {

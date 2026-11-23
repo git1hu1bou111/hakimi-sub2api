@@ -170,6 +170,9 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
+	if defaultHTTPDownstreamTier(c) && responsesResp.ServiceTier == OpenAIFastTierUltrafast {
+		responsesResp.ServiceTier = "default"
+	}
 	c.JSON(http.StatusOK, responsesResp)
 
 	return &OpenAIForwardResult{
@@ -206,6 +209,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
+	defaultTier := defaultHTTPDownstreamTier(c)
 	state := apicompat.NewChatCompletionsToResponsesStreamState(originalModel)
 	state.CustomTools = customTools
 	state.FunctionTools = functionTools
@@ -226,6 +230,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 					zap.String("request_id", requestID),
 				)
 				continue
+			}
+			if defaultTier {
+				sse = downstreamTierSSEBody(sse)
 			}
 			if _, err := fmt.Fprint(c.Writer, sse); err != nil {
 				clientDisconnected = true
