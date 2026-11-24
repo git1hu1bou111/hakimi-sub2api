@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import IntelligenceUptime from '../IntelligenceUptime.vue'
 import ChannelMonitorV3Card from '../ChannelMonitorV3Card.vue'
+import { passiveTimelineWindow } from '../passiveTimeline'
 import type { IntelligenceStatus, IntelligenceUptime as Uptime, MonitorMatrixRow } from '@/api/channelMonitorV2'
 
 vi.mock('vue-i18n', async importOriginal => ({
@@ -40,7 +41,7 @@ describe('Intelligence uptime', () => {
 
   it('keeps intelligence length separate from the passive 18-slot card', () => {
     const row = { platform: 'openai', group_id: 7, group_name: 'Example', metrics: { cache_rate: 0, error_rate: 0, ttft: { p50_ms: null } }, health: { overall: 'unknown' }, buckets: [] } as unknown as MonitorMatrixRow
-    const wrapper = mount(ChannelMonitorV3Card, { props: { row, countdownSeconds: 60, timelineLength: 18 },
+    const wrapper = mount(ChannelMonitorV3Card, { props: { row, countdownSeconds: 60, timelineWindow: passiveTimelineWindow('90m', undefined, Date.now()) },
       global: { stubs: { ProviderIcon: true, ChannelMonitorV3Timeline: true } } })
     expect(wrapper.getComponent(IntelligenceUptime).props('length')).toBe(60)
   })
@@ -69,7 +70,7 @@ describe('Intelligence uptime', () => {
   })
   it.each(['openai', 'anthropic', 'grok', 'gemini'])('only adds the row to OpenAI cards (%s)', platform => {
     const row = { platform, group_id: 7, group_name: 'Example', metrics: { cache_rate: 0, error_rate: 0, ttft: { p50_ms: null } }, health: { overall: 'unknown' }, buckets: [] } as unknown as MonitorMatrixRow
-    const wrapper = mount(ChannelMonitorV3Card, { props: { row, countdownSeconds: 60, timelineLength: 18 },
+    const wrapper = mount(ChannelMonitorV3Card, { props: { row, countdownSeconds: 60, timelineWindow: passiveTimelineWindow('90m', undefined, Date.now()) },
       global: { stubs: { ProviderIcon: true, ChannelMonitorV3Timeline: true, IntelligenceUptime: true } } })
     expect(wrapper.findComponent(IntelligenceUptime).exists()).toBe(platform === 'openai')
   })

@@ -34,6 +34,7 @@ export default {
     unknownGroup: '未知分组',
     groupCount: '{count} 个分组',
     timelineTooltip: '{time} · 可用率 {availability} · 缓存率 {cache} · 首 Token {ttft}',
+    timelineNoData: '{time} · 无数据',
     emptyTitle: '暂无渠道数据',
     emptyDescription: '当前时间范围内还没有可展示的被动监控数据',
     summary: '可用率 {success} · 缓存率 {cache}',

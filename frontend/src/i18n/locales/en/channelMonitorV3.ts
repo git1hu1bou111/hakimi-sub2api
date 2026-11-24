@@ -34,6 +34,7 @@ export default {
     unknownGroup: 'Unknown group',
     groupCount: '{count} groups',
     timelineTooltip: '{time} · Availability {availability} · Cache {cache} · First token {ttft}',
+    timelineNoData: '{time} · No data',
     emptyTitle: 'No channel data',
     emptyDescription: 'There is no passive-monitor data for this time range yet',
     summary: 'Availability {success} · Cache {cache}',

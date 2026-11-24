@@ -26,6 +26,8 @@ vi.mock('vue-i18n', async importOriginal => ({
         'monitorCommon.providers.grok': 'Grok',
         'monitorCommon.providers.gemini': 'Gemini',
       }
+      if (key === 'channelMonitorV3.timelineNoData') return `${params?.time} · 无数据`
+      if (key === 'channelMonitorV3.timelineTooltip') return `${params?.time} · 可用率 ${params?.availability}`
       return key === 'channelMonitorV3.groupCount' ? `${params?.count} 个分组` : labels[key] ?? key
     },
   }),
@@ -70,14 +72,14 @@ describe('Channel status platform sections', () => {
     wrapper?.unmount()
     wrapper = undefined
   })
-  function render() {
+  function render(stubCards = true) {
     wrapper = mount(ChannelStatusV3View, {
       global: { stubs: {
         AppLayout: { template: '<main><slot /></main>' },
         Icon: true,
         EmptyState: true,
         ProviderIcon: true,
-        ChannelMonitorV3Card: true,
+        ChannelMonitorV3Card: stubCards,
       } },
     })
     return wrapper
@@ -138,8 +140,101 @@ describe('Channel status platform sections', () => {
     await flushPromises()
     const card = view.get('[data-platform="openai"]').getComponent(ChannelMonitorV3Card)
     expect(card.props('row')).toEqual(openai)
-    expect(card.props()).toMatchObject({ coverage, countdownSeconds: 60, timelineLength: 18, userRateMultiplier: 1.5 })
+    expect(card.props()).toMatchObject({
+      coverage, countdownSeconds: 60, userRateMultiplier: 1.5,
+      timelineWindow: { start: Date.parse(coverage.requested_start), length: 18, step: 300_000 },
+    })
     expect(view.get('[data-platform="anthropic"]').getComponent(ChannelMonitorV3Card).props('row').intelligence).toBeUndefined()
+  })
+
+  it.each([true, false])('locates sparse buckets within the requested matrix window (requested end present: %s)', async includeEnd => {
+    const channel = row('anthropic', 7)
+    channel.buckets = ['01:20', '00:10', '00:00', '01:30'].map(time => ({
+      bucket_start: `2026-09-25T${time}:00Z`, metrics: channel.metrics, health: channel.health,
+    }))
+    const matrix = response([channel, row('anthropic', 8)])
+    matrix.coverage = {
+      ...coverage, requested_end: includeEnd ? '2026-09-25T01:30:00Z' : undefined,
+      data_through: '2026-09-25T01:24:00Z', coverage_complete: false,
+    }
+    vi.mocked(api.getMatrix).mockResolvedValue(matrix)
+    const view = render(false)
+    await flushPromises()
+    const [sparse, empty] = view.findAllComponents(ChannelMonitorV3Card)
+    const slots = sparse.findAll('.v3-bar-hitbox')
+    expect(slots).toHaveLength(18)
+    const sampled = slots.flatMap((slot, i) => slot.attributes('aria-label')?.includes('可用率') ? [i] : [])
+    expect(sampled).toEqual([0, 2, 16])
+    expect(empty.findAll('.v3-bar-hitbox')).toHaveLength(18)
+    expect(empty.findAll('.v3-bar-hitbox').every(slot => slot.attributes('aria-label').includes('无数据'))).toBe(true)
+    const label = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).format(new Date('2026-09-25T01:25:00Z')) + ' · 无数据'
+    expect(slots[17].attributes('aria-label')).toBe(label)
+    expect(slots[17].get('.v3-soft-glass-bar').classes()).toContain('bg-gray-300')
+    await slots[17].trigger('focus')
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent?.trim()).toBe(label)
+  })
+
+  it.each([
+    ['24h', 3600, 24], ['7d', 43200, 14], ['30d', 86400, 30],
+  ] as const)('changes the timeline to %s only after its matrix arrives', async (range, step, length) => {
+    const channel = row('anthropic', 7)
+    vi.mocked(api.getMatrix).mockResolvedValueOnce(response([channel]))
+    const view = render(false)
+    await flushPromises()
+    let finishMatrix!: (matrix: MonitorMatrixResponse) => void
+    vi.mocked(api.getMatrix).mockReturnValueOnce(new Promise(resolve => { finishMatrix = resolve }))
+    const button = view.findAll('button').find(item => item.text() === `channelMonitorV3.ranges.${range}`)!
+    await button.trigger('click')
+    expect(view.findAll('.v3-bar-slot')).toHaveLength(18)
+    const start = Date.parse(coverage.requested_start)
+    const second = new Date(start + step * 1000).toISOString()
+    finishMatrix({
+      ...response([{ ...channel, buckets: [{ bucket_start: second, metrics: channel.metrics, health: channel.health }] }]),
+      coverage: { ...coverage, bucket_seconds: step, requested_end: new Date(start + length * step * 1000).toISOString() },
+    })
+    await flushPromises()
+    const slots = view.findAll('.v3-bar-hitbox')
+    expect(slots).toHaveLength(length)
+    expect(slots[1].attributes('aria-label')).toContain('可用率')
+    expect(slots[length - 1].attributes('aria-label')).toContain('无数据')
+  })
+
+  it('aligns non-boundary windows to UTC bucket starts and ignores out-of-range rows', async () => {
+    const channel = row('anthropic', 7)
+    channel.buckets = ['08:00', '08:05', '09:30', '09:35'].map(time => ({
+      bucket_start: `2026-09-25T${time}:00+08:00`, metrics: channel.metrics, health: channel.health,
+    }))
+    vi.mocked(api.getMatrix).mockResolvedValue({
+      ...response([channel]),
+      coverage: { ...coverage, requested_start: '2026-09-25T00:02:00Z', requested_end: '2026-09-25T01:32:00Z' },
+    })
+    const view = render(false)
+    await flushPromises()
+    const slots = view.findAll('.v3-bar-hitbox')
+    expect(slots).toHaveLength(18)
+    expect(slots.flatMap((slot, i) => slot.attributes('aria-label')?.includes('可用率') ? [i] : [])).toEqual([0, 17])
+  })
+
+  it.each([true, false])('anchors missing starts using the matrix end or receipt time (end present: %s)', async includeEnd => {
+    const receivedAt = includeEnd ? '2026-09-27T18:03:00Z' : '2026-09-25T01:26:00Z'
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(receivedAt))
+    try {
+      const channel = row('anthropic', 7)
+      channel.buckets = [{ bucket_start: '2026-09-25T00:10:00Z', metrics: channel.metrics, health: channel.health }]
+      vi.mocked(api.getMatrix).mockResolvedValue({
+        ...response([channel]), coverage: { ...coverage, requested_start: '', requested_end: includeEnd ? '2026-09-25T01:30:00Z' : undefined },
+      })
+      const view = render(false)
+      await flushPromises()
+      const slots = view.findAll('.v3-bar-hitbox')
+      expect(slots).toHaveLength(18)
+      expect(slots[2].attributes('aria-label')).toContain('可用率')
+      expect(slots[17].attributes('aria-label')).toContain('无数据')
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('re-groups and updates counts after refreshing', async () => {

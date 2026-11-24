@@ -33,7 +33,7 @@
       class="mt-auto"
       :buckets="row.buckets"
       :countdown-seconds="countdownSeconds"
-      :length="timelineLength"
+      :window="timelineWindow"
       :cache-rate-display-cap="row.cache_rate_display_cap"
     />
     <IntelligenceUptime v-if="row.platform === 'openai'" :uptime="row.intelligence" :coverage="coverage" />
@@ -49,12 +49,13 @@ import { availabilityTextClass, cacheRateForDisplay, formatMonitorMs, formatMoni
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import ProviderIcon from './ProviderIcon.vue'
 import ChannelMonitorV3Timeline from './ChannelMonitorV3Timeline.vue'
+import type { PassiveTimelineWindow } from './passiveTimeline'
 import IntelligenceUptime from './IntelligenceUptime.vue'
 
 const props = defineProps<{
   row: MonitorMatrixRow
   countdownSeconds: number
-  timelineLength: number
+  timelineWindow: PassiveTimelineWindow
   userRateMultiplier?: number | null
   coverage?: MonitorCoverage
 }>()

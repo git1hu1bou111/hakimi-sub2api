@@ -28,7 +28,7 @@
         <div v-for="i in 8" :key="i" class="h-72 animate-pulse rounded-[24px] bg-white/60 dark:bg-dark-800" />
       </div>
       <EmptyState v-else-if="rows.length === 0" :title="t('channelMonitorV3.emptyTitle')" :description="t('channelMonitorV3.emptyDescription')" />
-      <div v-else class="space-y-8">
+      <div v-else-if="matrix" class="space-y-8">
         <section
           v-for="(section, index) in platformSections"
           :key="section.platform"
@@ -72,7 +72,7 @@
               :row="row"
               :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
               :countdown-seconds="countdownSeconds"
-              :timeline-length="timelineLength"
+              :timeline-window="matrix.timeline"
               :coverage="matrix?.coverage"
             />
           </div>
@@ -95,6 +95,7 @@ import userGroupsAPI from '@/api/groups'
 import type { MonitorFilter, MonitorMatrixResponse, MonitorMatrixRow, MonitorRange, MonitorSnapshot } from '@/api/channelMonitorV2'
 import type { Group } from '@/types'
 import ChannelMonitorV3Card from '@/components/user/monitor/ChannelMonitorV3Card.vue'
+import { passiveTimelineWindow, type PassiveTimelineWindow } from '@/components/user/monitor/passiveTimeline'
 import ProviderIcon from '@/components/user/monitor/ProviderIcon.vue'
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import { formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
@@ -110,7 +111,7 @@ const ranges = computed(() => [
 ])
 const filter = ref<MonitorFilter>({ range: '90m', platforms: [], groupIds: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
-const matrix = ref<MonitorMatrixResponse | null>(null)
+const matrix = ref<(MonitorMatrixResponse & { timeline: PassiveTimelineWindow }) | null>(null)
 const loading = ref(false)
 const refreshing = ref(false)
 const userGroupRates = ref<Record<number, number>>({})
@@ -155,7 +156,6 @@ const platformSections = computed(() => {
   return [...groups].map(([platform, rows]) => ({ platform, rows }))
     .sort((a, b) => rank(a.platform) - rank(b.platform) || a.platform.localeCompare(b.platform))
 })
-const timelineLength = computed(() => ({ '90m': 18, '24h': 24, '7d': 14, '30d': 30 })[filter.value.range])
 const latestSnapshotMetrics = computed(() => {
   const trend = [...(snapshot.value?.trend ?? [])]
     .filter(point => point.bucket_start && point.metrics)
@@ -191,17 +191,21 @@ async function loadUserGroupRates() {
 async function reload(silent = true) {
   controller?.abort()
   const request = new AbortController()
+  const requestedFilter = filter.value
   controller = request
   refreshing.value = true
   if (!silent) loading.value = true
   try {
     const [nextSnapshot, nextMatrix] = await Promise.all([
-      api.getSnapshot(filter.value, false, request.signal),
-      api.getMatrix(filter.value, 'platform_group', false, request.signal),
+      api.getSnapshot(requestedFilter, false, request.signal),
+      api.getMatrix(requestedFilter, 'platform_group', false, request.signal),
     ])
     if (request.signal.aborted || controller !== request) return
     snapshot.value = nextSnapshot
-    matrix.value = nextMatrix
+    matrix.value = {
+      ...nextMatrix,
+      timeline: passiveTimelineWindow(requestedFilter.range, nextMatrix.coverage, Date.now()),
+    }
     // Active intelligence probes must not wait for the passive monitor's
     // optional five-minute refresh. Keep the faster bootstrap polling intact.
     scheduleRefresh(nextSnapshot.coverage.bootstrap?.active ? 10 : Math.min(60, nextSnapshot.config.refresh_interval_seconds))

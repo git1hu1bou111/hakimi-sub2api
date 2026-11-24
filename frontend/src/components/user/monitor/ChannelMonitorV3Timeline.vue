@@ -1,7 +1,7 @@
 <template>
   <div class="mt-4 border-t border-white/70 pt-3 dark:border-dark-700/60">
     <div class="mb-2 flex justify-between text-[10px] font-semibold uppercase tracking-widest text-gray-400">
-      <span>{{ t('monitorCommon.history60pts', { n: length }) }}</span>
+      <span>{{ t('monitorCommon.history60pts', { n: window.length }) }}</span>
       <span class="tabular-nums">{{ t('monitorCommon.nextUpdateIn', { n: countdownSeconds }) }}</span>
     </div>
 
@@ -59,16 +59,16 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitorMatrixBucket } from '@/api/channelMonitorV2'
+import type { PassiveTimelineWindow } from './passiveTimeline'
 import { availabilityBarClass, cacheRateForDisplay, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 
 const props = withDefaults(defineProps<{
   buckets?: MonitorMatrixBucket[]
   countdownSeconds: number
-  length?: number
+  window: PassiveTimelineWindow
   cacheRateDisplayCap?: number
 }>(), {
   buckets: () => [],
-  length: 18,
 })
 
 const { t, locale } = useI18n()
@@ -140,45 +140,42 @@ interface TimelineBar {
   title: string
 }
 
-function formatBucketTime(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return new Intl.DateTimeFormat(locale.value || undefined, {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  }).format(date)
+const bucketTime = computed(() => new Intl.DateTimeFormat(locale.value || undefined, {
+  month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+}))
+
+function timelineBar(start: number, bucket?: MonitorMatrixBucket): TimelineBar {
+  const key = String(start)
+  const time = bucketTime.value.format(start)
+  if (!bucket) {
+    return { key, ...STATUS_STYLE.unknown, title: t('channelMonitorV3.timelineNoData', { time }) }
+  }
+  const state = bucket.health.overall
+  return {
+    key,
+    heightPct: (STATUS_STYLE[state] ?? STATUS_STYLE.unknown).heightPct,
+    colorClass: availabilityBarClass((1 - bucket.metrics.error_rate) * 100),
+    title: t('channelMonitorV3.timelineTooltip', {
+      time,
+      availability: formatMonitorPercent(1 - bucket.metrics.error_rate, locale.value || 'zh-CN'),
+      cache: formatMonitorPercent(cacheRateForDisplay(bucket.metrics.cache_rate, props.cacheRateDisplayCap), locale.value || 'zh-CN'),
+      ttft: formatMonitorMs(bucket.metrics.ttft.p50_ms),
+    }),
+  }
 }
 
 const displayBars = computed<TimelineBar[]>(() => {
-  const real = [...props.buckets]
-    .sort((a, b) => Date.parse(a.bucket_start) - Date.parse(b.bucket_start))
-    .slice(-props.length)
-  const bars: TimelineBar[] = Array.from({ length: Math.max(0, props.length - real.length) }, (_, index) => ({
-    key: `empty-${index}`,
-    ...STATUS_STYLE.unknown,
-    title: '',
-  }))
-
-  for (const bucket of real) {
-    const state = bucket.health.overall === 'healthy' || bucket.health.overall === 'warning' || bucket.health.overall === 'critical'
-      ? bucket.health.overall
-      : 'unknown'
-    const availabilityPercent = (1 - bucket.metrics.error_rate) * 100
-    const style = {
-      ...(STATUS_STYLE[state]),
-      colorClass: availabilityBarClass(availabilityPercent),
-    }
-    bars.push({
-      key: bucket.bucket_start,
-      ...style,
-      title: t('channelMonitorV3.timelineTooltip', {
-        time: formatBucketTime(bucket.bucket_start),
-        availability: formatMonitorPercent(1 - bucket.metrics.error_rate, locale.value || 'zh-CN'),
-        cache: formatMonitorPercent(cacheRateForDisplay(bucket.metrics.cache_rate, props.cacheRateDisplayCap), locale.value || 'zh-CN'),
-        ttft: formatMonitorMs(bucket.metrics.ttft.p50_ms),
-      }),
-    })
+  const buckets = new Map<number, MonitorMatrixBucket>()
+  for (const bucket of props.buckets) {
+    const start = Date.parse(bucket.bucket_start)
+    if (Number.isFinite(start)) buckets.set(start, bucket)
   }
-  return bars
+
+  const { start, step, length } = props.window
+  return Array.from({ length }, (_, index) => {
+    const time = start + index * step
+    return timelineBar(time, buckets.get(time))
+  })
 })
 
 const tooltipStyle = computed(() => ({
