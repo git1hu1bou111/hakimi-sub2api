@@ -29,6 +29,8 @@
       </div>
     </div>
 
+    <p v-if="olderMetricPoint" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('channelMonitorV3.metricsPoint', { time: olderMetricPoint }) }}</p>
+
     <ChannelMonitorV3Timeline
       class="mt-auto"
       :buckets="row.buckets"
@@ -49,7 +51,7 @@ import { availabilityTextClass, cacheRateForDisplay, formatMonitorMs, formatMoni
 import { providerGradient, useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import ProviderIcon from './ProviderIcon.vue'
 import ChannelMonitorV3Timeline from './ChannelMonitorV3Timeline.vue'
-import type { PassiveTimelineWindow } from './passiveTimeline'
+import { minuteMs, type PassiveTimelineWindow } from './passiveTimeline'
 import IntelligenceUptime from './IntelligenceUptime.vue'
 
 const props = defineProps<{
@@ -59,7 +61,7 @@ const props = defineProps<{
   userRateMultiplier?: number | null
   coverage?: MonitorCoverage
 }>()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { statusLabel, statusBadgeClass, providerLabel, providerBadgeClass } = useChannelMonitorFormat()
 
 const groupLabel = computed(() => props.row.group_name || t('channelMonitorV3.unknownGroup'))
@@ -67,27 +69,42 @@ const formattedUserRate = computed(() => {
   const value = props.userRateMultiplier
   return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}x` : '-'
 })
-const latestBucket = computed(() => [...props.row.buckets]
-  .filter(bucket => bucket.bucket_start && bucket.metrics)
-  .sort((a, b) => Date.parse(a.bucket_start) - Date.parse(b.bucket_start))
-  .at(-1))
-const latestMetrics = computed(() => latestBucket.value?.metrics ?? props.row.metrics)
-const latestHealth = computed(() => latestBucket.value?.health ?? props.row.health)
-// The cards show the newest completed monitoring bucket, not the selected-range aggregate.
+const latestBucket = computed(() => {
+  const { start, step, length, trailing } = props.timelineWindow
+  return [...props.row.buckets].filter(bucket => {
+    if (!bucket.bucket_start || !bucket.metrics) return false
+    if (!trailing) return true
+    const time = Date.parse(bucket.bucket_start)
+    return trailing.compatible && trailing.ready && time >= start && time < start + length * step &&
+      (time - start) % step === 0 && Math.max(time, trailing.from) < Math.min(time + step, trailing.through)
+  }).sort((a, b) => Date.parse(a.bucket_start) - Date.parse(b.bucket_start)).at(-1)
+})
+const olderMetricPoint = computed(() => {
+  const { start, step, length, trailing } = props.timelineWindow
+  if (!trailing || !latestBucket.value) return ''
+  const time = Date.parse(latestBucket.value.bucket_start)
+  if (time === start + (length - 1) * step) return ''
+  return new Intl.DateTimeFormat(locale.value || undefined, {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).format(time + step - minuteMs)
+})
+const latestMetrics = computed(() => latestBucket.value?.metrics ?? (props.timelineWindow.trailing ? undefined : props.row.metrics))
+const latestHealth = computed(() => latestBucket.value?.health ?? (props.timelineWindow.trailing ? undefined : props.row.health))
 // 缓存率展示优先用「排除冷启动」的复用率（cache_rate_warm，只统计至少命中过一次缓存的请求）；
 // 老数据没有该字段时回退到原始口径 cache_rate。健康分/趋势图仍用原始口径。
 const cacheRate = computed(() => {
   const metrics = latestMetrics.value
+  if (!metrics) return '—'
   return formatMonitorPercent(cacheRateForDisplay(metrics.cache_rate_warm || metrics.cache_rate, props.row.cache_rate_display_cap))
 })
-const availabilityPercent = computed(() => (1 - latestMetrics.value.error_rate) * 100)
-const successRate = computed(() => formatMonitorPercent(availabilityPercent.value / 100))
+const availabilityPercent = computed(() => latestMetrics.value ? (1 - latestMetrics.value.error_rate) * 100 : null)
+const successRate = computed(() => availabilityPercent.value == null ? '—' : formatMonitorPercent(availabilityPercent.value / 100))
 const availabilityClass = computed(() => availabilityTextClass(availabilityPercent.value))
-const ttft = computed(() => formatMonitorMs(latestMetrics.value.ttft.p50_ms))
+const ttft = computed(() => latestMetrics.value ? formatMonitorMs(latestMetrics.value.ttft.p50_ms) : '—')
 const monitorStatus = computed<MonitorStatus | null>(() => {
-  if (latestHealth.value.overall === 'healthy') return 'operational'
-  if (latestHealth.value.overall === 'warning') return 'degraded'
-  if (latestHealth.value.overall === 'critical') return 'failed'
+  if (latestHealth.value?.overall === 'healthy') return 'operational'
+  if (latestHealth.value?.overall === 'warning') return 'degraded'
+  if (latestHealth.value?.overall === 'critical') return 'failed'
   return null
 })
 const statusText = computed(() => monitorStatus.value ? statusLabel(monitorStatus.value) : t('channelMonitorV3.unknown'))

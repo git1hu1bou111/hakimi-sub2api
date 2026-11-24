@@ -90,6 +90,7 @@ type ChannelMonitorV2Filter struct {
 	Start           time.Time
 	End             time.Time
 	Bucket          time.Duration
+	TrailingMinutes bool // V3 90m matrix: group minute facts into slots ending after each five-minute label.
 }
 
 type ChannelMonitorV2Metric struct {

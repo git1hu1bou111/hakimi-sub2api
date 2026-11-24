@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,98 @@ import (
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
+
+func TestChannelMonitorV2TrailingMinuteCoverage(t *testing.T) {
+	label := time.Date(2026, 11, 25, 2, 55, 0, 0, time.UTC)
+	filter := service.ChannelMonitorV2Filter{Start: label.Add(-85 * time.Minute), End: label.Add(5 * time.Minute), Bucket: 5 * time.Minute, TrailingMinutes: true}
+	for _, test := range []struct {
+		name                                  string
+		nowOffset, throughOffset, labelOffset int
+	}{
+		{"on the tick", 0, 0, 0},
+		{"only first minute covered", 0, -3, 0},
+		{"latest slot has no covered minute yet", 0, -4, -5},
+		{"fifth minute completes the slot", 1, 1, 0},
+		{"do not show next label early", 4, 4, 0},
+		{"next slot", 5, 5, 5},
+		{"delayed aggregator", 5, -8, -5},
+		{"future watermark is clamped", 0, 10, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := label.Add(time.Duration(test.nowOffset) * time.Minute)
+			through := label.Add(time.Duration(test.throughOffset) * time.Minute)
+			wm := &service.ChannelMonitorV2AggregationWatermark{HasData: true, DataThrough: through, LastSuccessfulAt: now, UsageCoverageStart: label.Add(-24 * time.Hour), ErrorCoverageStart: label.Add(-24 * time.Hour)}
+			c := channelMonitorV2CoverageAt(filter, wm, now)
+			expectedEnd := label.Add(time.Duration(test.labelOffset+1) * time.Minute)
+			require.Equal(t, expectedEnd, c.RequestedEnd)
+			require.Equal(t, expectedEnd.Add(-90*time.Minute), c.RequestedStart)
+			if through.After(now) {
+				through = now
+			}
+			require.Equal(t, through, c.DataThrough)
+			require.True(t, c.CoverageComplete)
+		})
+	}
+	missing := channelMonitorV2CoverageAt(filter, nil, label)
+	require.True(t, missing.DataThrough.IsZero())
+	require.True(t, missing.ComputedAt.IsZero())
+	require.False(t, missing.CoverageComplete)
+	partial := &service.ChannelMonitorV2AggregationWatermark{HasData: true, DataThrough: label, LastSuccessfulAt: label, UsageCoverageStart: label.Add(-2 * time.Hour), ErrorCoverageStart: label.Add(-50 * time.Minute)}
+	c := channelMonitorV2CoverageAt(filter, partial, label)
+	require.False(t, c.CoverageComplete)
+	require.Equal(t, partial.ErrorCoverageStart, c.CoverageStart)
+}
+
+func TestChannelMonitorV2TrailingMinuteMatrix(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	repo := &channelMonitorV2Repository{db: db}
+	// Leave the watermark in the recent past so a test crossing a clock
+	// boundary still queries exactly the window below.
+	label := time.Now().UTC().Truncate(5 * time.Minute).Add(-30 * time.Minute)
+	latest := label.Add(-4 * time.Minute)
+	start := label.Add(time.Minute - 90*time.Minute)
+	coverageStart := start.Add(-2 * time.Hour)
+	cfg := service.ChannelMonitorV2Config{GroupIDs: []int64{71, 72},
+		Platforms:              []service.ChannelMonitorV2PlatformConfig{{Platform: "openai", Enabled: true}},
+		IgnoredErrorCategories: []string{"client_error"},
+	}
+	filter := service.ChannelMonitorV2Filter{Start: label.Add(-85 * time.Minute), End: label.Add(5 * time.Minute), Bucket: 5 * time.Minute, TrailingMinutes: true}
+	mock.ExpectBegin()
+	mock.ExpectQuery("FROM channel_monitor_v2_watermarks").WillReturnRows(sqlmock.NewRows(strings.Fields("usage_start error_start through computed backfill")).AddRow(coverageStart, coverageStart, label, label, coverageStart))
+	bin := func(alias, table string) string {
+		return regexp.QuoteMeta("SELECT date_bin($1::interval,"+alias+".bucket_start,TIMESTAMPTZ '1970-01-01 00:01:00+00')") + ".* FROM " + table + " " + alias + " "
+	}
+	platforms, groups := pq.Array([]string{"openai"}), pq.Array(cfg.GroupIDs)
+	facts := sqlmock.NewRows(strings.Fields("bucket platform groupid groupname model successes errors affected attempts input output create read sample_read sample_prompt ttft_sum ttft_count duration_sum duration_count"))
+	// Preserve the oldest bucket and an all-failure bucket; omit a group
+	// with raw aggregate rows but no qualifying requests.
+	facts.AddRow(start, "openai", 71, "A", "m", 2, 0, 0, 0, 20, 2, 0, 10, 0, 0, 0, 0, 0, 0)
+	facts.AddRow(latest, "openai", 71, "A", "m", 0, 2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	facts.AddRow(latest, "openai", 72, "B", "m", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	mock.ExpectQuery(bin("m", "channel_monitor_v2_metrics_1m")).WithArgs("300 seconds", start, label, platforms, groups).WillReturnRows(facts)
+	hist := sqlmock.NewRows(strings.Fields("bucket platform groupid model user_id metric upper count")).AddRow(start, "openai", 71, "m", 0, "ttft", 300, 2)
+	mock.ExpectQuery(bin("h", "channel_monitor_v2_latency_histograms_1m")).WithArgs("300 seconds", start, label, platforms, groups, 0).WillReturnRows(hist)
+	mock.ExpectQuery("SELECT id, COALESCE").WithArgs(groups).WillReturnRows(sqlmock.NewRows(strings.Fields("id name platform")).AddRow(71, "A", "openai").AddRow(72, "B", "openai"))
+	mock.ExpectQuery(bin("e", "channel_monitor_v2_error_metrics_1m")).WithArgs("300 seconds", start, label, platforms, groups, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion).WillReturnRows(sqlmock.NewRows(strings.Fields("bucket platform groupid model count")).AddRow(latest, "openai", 71, "m", 1))
+	mock.ExpectCommit()
+	matrix, err := repo.GetMatrix(context.Background(), filter, cfg, service.ChannelMonitorV2GroupByPlatformGroup, false)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, start, matrix.Coverage.RequestedStart)
+	require.Len(t, matrix.Items, 2)
+	buckets := matrix.Items[0].Buckets
+	require.Len(t, buckets, 2)
+	require.Equal(t, start, buckets[0].BucketStart)
+	require.Equal(t, int64(300), *buckets[0].Metrics.TTFT.P50Ms)
+	require.Equal(t, latest, buckets[1].BucketStart)
+	require.Equal(t, int64(2), buckets[1].Metrics.ErrorRequests)
+	require.Equal(t, 0.0, buckets[1].Metrics.SuccessRate)
+	require.Equal(t, .5, buckets[1].Metrics.ErrorRate)
+	require.Equal(t, .5, buckets[1].Metrics.RPM) // Two errors in four closed minutes.
+	require.Empty(t, matrix.Items[1].Buckets)
+}
 
 func TestChannelMonitorV2DateBinOriginIsUTC(t *testing.T) {
 	require.Equal(t, "TIMESTAMPTZ '1970-01-01 00:00:00+00'", channelMonitorV2DateBinOrigin)

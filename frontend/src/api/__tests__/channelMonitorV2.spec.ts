@@ -18,6 +18,14 @@ describe('channel monitor V2 query serialization', () => {
     expect(query).not.toContain('%5B%5D')
   })
 
+  it('opts the public V3 90m matrix into trailing minute buckets', async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { items: [] } })
+    await getMatrix({ range: '90m', platforms: [], groupIds: [], models: [] }, 'platform_group', false, undefined, true)
+    expect(get).toHaveBeenCalledWith('/channel-monitor-v2/matrix', expect.objectContaining({
+      params: expect.objectContaining({ range: '90m', group_by: 'platform_group', trailing_minutes: true }),
+    }))
+  })
+
   it('sends the matrix grouping with the shared filters', async () => {
     const get = vi.spyOn(apiClient, 'get').mockResolvedValue({
       data: { coverage: {}, group_by: 'platform_group', items: [] },

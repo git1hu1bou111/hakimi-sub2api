@@ -145,6 +145,7 @@ func (h *ChannelMonitorV2Handler) matrix(c *gin.Context, admin bool) {
 		response.BadRequest(c, err.Error())
 		return
 	}
+	filter.TrailingMinutes = !admin && filter.Range == "90m" && groupBy == service.ChannelMonitorV2GroupByPlatformGroup && c.Query("trailing_minutes") == "true"
 	if !h.scopeFilter(c, &filter, admin) {
 		return
 	}

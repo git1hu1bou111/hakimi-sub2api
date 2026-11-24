@@ -10,8 +10,9 @@
             </h1>
             <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
               <span class="h-2 w-2 rounded-full" :class="refreshing ? 'bg-gray-400' : 'bg-emerald-500'" />
-              <span>{{ snapshot ? t('channelMonitorV3.updatedTo', { time: formatTime(snapshot.coverage.data_through) }) : t('common.loading') }}</span>
-              <span v-if="snapshot && !snapshot.coverage.coverage_complete" class="badge badge-warning">{{ t('channelMonitorV3.partialCoverage') }}</span>
+              <span>{{ coverageLabel }}</span>
+              <span v-if="displayCoverage && !displayCoverage.coverage_complete" class="badge badge-warning">{{ t('channelMonitorV3.partialCoverage') }}</span>
+              <span v-if="lagMinutes >= 5" class="badge badge-warning">{{ t('channelMonitorV3.aggregationLag', { n: lagMinutes }) }}</span>
             </div>
           </div>
           <button class="btn btn-secondary btn-icon h-8 w-8 rounded-lg" type="button" :disabled="loading || refreshing" :title="t('common.refresh')" @click="reload(false)"><Icon name="refresh" size="sm" :class="refreshing ? 'animate-spin' : ''" /></button>
@@ -73,7 +74,7 @@
               :user-rate-multiplier="getUserRateMultiplier(row.group_id)"
               :countdown-seconds="countdownSeconds"
               :timeline-window="matrix.timeline"
-              :coverage="matrix?.coverage"
+              :coverage="matrix.timeline.trailing ? snapshot?.coverage : matrix.coverage"
             />
           </div>
         </section>
@@ -156,6 +157,14 @@ const platformSections = computed(() => {
   return [...groups].map(([platform, rows]) => ({ platform, rows }))
     .sort((a, b) => rank(a.platform) - rank(b.platform) || a.platform.localeCompare(b.platform))
 })
+const displayCoverage = computed(() => matrix.value?.timeline.trailing ? matrix.value.coverage : snapshot.value?.coverage)
+const coverageLabel = computed(() => {
+  const trailing = matrix.value?.timeline.trailing
+  if (trailing && !trailing.ready) return t('channelMonitorV3.awaitingAggregation')
+  if (trailing?.compatible) return t('channelMonitorV3.aggregatedMinute', { time: formatTime(trailing.through - 1) })
+  return displayCoverage.value ? t('channelMonitorV3.updatedTo', { time: formatTime(displayCoverage.value.data_through) }) : t('common.loading')
+})
+const lagMinutes = computed(() => matrix.value?.timeline.trailing?.ready ? Math.floor(matrix.value.coverage.aggregation_lag_seconds / 60) : 0)
 const latestSnapshotMetrics = computed(() => {
   const trend = [...(snapshot.value?.trend ?? [])]
     .filter(point => point.bucket_start && point.metrics)
@@ -164,7 +173,7 @@ const latestSnapshotMetrics = computed(() => {
 })
 
 function formatPercent(value: number) { return formatMonitorPercent(value, locale.value || 'zh-CN') }
-function formatTime(value?: string) { if (!value) return '-'; return new Intl.DateTimeFormat(locale.value || undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) }
+function formatTime(value?: string | number) { if (!value) return '-'; return new Intl.DateTimeFormat(locale.value || undefined, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) }
 function setRange(value: MonitorRange) { filter.value = { ...filter.value, range: value } }
 
 function getUserRateMultiplier(groupId?: number) {
@@ -198,7 +207,7 @@ async function reload(silent = true) {
   try {
     const [nextSnapshot, nextMatrix] = await Promise.all([
       api.getSnapshot(requestedFilter, false, request.signal),
-      api.getMatrix(requestedFilter, 'platform_group', false, request.signal),
+      api.getMatrix(requestedFilter, 'platform_group', false, request.signal, requestedFilter.range === '90m'),
     ])
     if (request.signal.aborted || controller !== request) return
     snapshot.value = nextSnapshot

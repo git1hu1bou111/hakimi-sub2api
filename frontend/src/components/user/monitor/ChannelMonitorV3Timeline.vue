@@ -50,7 +50,8 @@
 
     <div class="mt-1 flex justify-between text-[9px] uppercase tracking-widest text-gray-400">
       <span>{{ t('monitorCommon.past') }}</span>
-      <span>{{ t('monitorCommon.now') }}</span>
+      <span v-if="window.trailing?.compatible">{{ t('channelMonitorV3.lastPoint', { time: bucketTime.format(window.start + window.step * window.length - minuteMs) }) }}</span>
+      <span v-else-if="!window.trailing">{{ t('monitorCommon.now') }}</span>
     </div>
   </div>
 </template>
@@ -59,7 +60,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MonitorMatrixBucket } from '@/api/channelMonitorV2'
-import type { PassiveTimelineWindow } from './passiveTimeline'
+import { minuteMs, type PassiveTimelineWindow } from './passiveTimeline'
 import { availabilityBarClass, cacheRateForDisplay, formatMonitorMs, formatMonitorPercent } from '@/features/channel-monitor-v2/monitorFormat'
 
 const props = withDefaults(defineProps<{
@@ -144,12 +145,34 @@ const bucketTime = computed(() => new Intl.DateTimeFormat(locale.value || undefi
   month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
 }))
 
+const clockTime = computed(() => new Intl.DateTimeFormat(locale.value || undefined, {
+  hour: '2-digit', minute: '2-digit',
+}))
+
+function intervalMinute(minute: number, point: number): string {
+  const format = new Date(minute).toDateString() === new Date(point).toDateString() ? clockTime : bucketTime
+  return format.value.format(minute)
+}
+
 function timelineBar(start: number, bucket?: MonitorMatrixBucket): TimelineBar {
   const key = String(start)
-  const time = bucketTime.value.format(start)
-  if (!bucket) {
-    return { key, ...STATUS_STYLE.unknown, title: t('channelMonitorV3.timelineNoData', { time }) }
+  const { trailing, step } = props.window
+  let time = bucketTime.value.format(start)
+  const unknown = (title: string) => ({ key, ...STATUS_STYLE.unknown, title })
+  if (trailing) {
+    if (!trailing.compatible) return unknown(t('channelMonitorV3.windowUnavailable'))
+    const point = start + step - minuteMs
+    time = bucketTime.value.format(point)
+    if (!trailing.ready) return unknown(t('channelMonitorV3.pointAwaitingAggregation', { time }))
+    const from = Math.max(start, trailing.from)
+    const through = Math.min(start + step, trailing.through)
+    if (through <= from) return unknown(t('channelMonitorV3.pointUncovered', { time }))
+    // The watermark is exclusive. Show the last included minute on the clock.
+    const interval = { time, from: intervalMinute(from, point), last: intervalMinute(through - 1, point) }
+    if (!bucket) return unknown(t('channelMonitorV3.noRequestsThrough', interval))
+    time = t('channelMonitorV3.countedInterval', interval)
   }
+  if (!bucket) return unknown(t('channelMonitorV3.timelineNoData', { time }))
   const state = bucket.health.overall
   return {
     key,

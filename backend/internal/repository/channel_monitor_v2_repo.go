@@ -13,7 +13,18 @@ import (
 	"github.com/lib/pq"
 )
 
-type channelMonitorV2Repository struct{ db *sql.DB }
+type channelMonitorV2Repository struct {
+	db *sql.DB
+	// matrixTx belongs to a request-local repository copy; other callers use db.
+	matrixTx *sql.Tx
+}
+
+func (r *channelMonitorV2Repository) matrixReader() sqlQueryer {
+	if r.matrixTx != nil {
+		return r.matrixTx
+	}
+	return r.db
+}
 
 func NewChannelMonitorV2Repository(db *sql.DB) service.ChannelMonitorV2Repository {
 	return &channelMonitorV2Repository{db: db}
@@ -386,10 +397,31 @@ func (r *channelMonitorV2Repository) GetMatrix(ctx context.Context, filter servi
 	if channelMonitorV2RestrictedGroupScopeEmpty(filter, cfg) {
 		return &service.ChannelMonitorV2Matrix{GroupBy: groupBy, Items: []service.ChannelMonitorV2MatrixRow{}}, nil
 	}
+	if !filter.TrailingMinutes {
+		return r.readMatrix(ctx, filter, cfg, groupBy, admin)
+	}
+	// A single read snapshot keeps the minute counts, watermark, TTFT and ignored
+	// errors consistent even when the aggregator rewrites the latest minutes.
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	reader := channelMonitorV2Repository{db: r.db, matrixTx: tx}
+	matrix, err := reader.readMatrix(ctx, filter, cfg, groupBy, admin)
+	if err != nil {
+		return nil, err
+	}
+	return matrix, tx.Commit()
+}
+
+func (r *channelMonitorV2Repository) readMatrix(ctx context.Context, filter service.ChannelMonitorV2Filter, cfg service.ChannelMonitorV2Config, groupBy service.ChannelMonitorV2GroupBy, admin bool) (*service.ChannelMonitorV2Matrix, error) {
 	coverage, err := r.loadCoverage(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
+	// The watermark-aligned window may begin before ParseFilter's wall-clock window.
+	filter.Start, filter.End = coverage.RequestedStart, coverage.RequestedEnd
 	effectiveFilter := channelMonitorV2CommonCoverageFilter(filter, *coverage)
 	facts, err := r.loadFacts(ctx, effectiveFilter, cfg, true)
 	if err != nil {
@@ -490,7 +522,16 @@ func (r *channelMonitorV2Repository) GetMatrix(ctx context.Context, filter servi
 			if parseErr != nil {
 				continue
 			}
-			bucketMetrics := acc.buckets[bucketKey].metric(filter.Bucket.Minutes(), admin)
+			bucketMinutes := filter.Bucket.Minutes()
+			if filter.TrailingMinutes {
+				bucketWindow := service.ChannelMonitorV2Filter{Start: bucketStart, End: bucketStart.Add(filter.Bucket)}
+				bucketMinutes = channelMonitorV2CoveredMinutes(bucketWindow, *coverage)
+			}
+			bucketMetrics := acc.buckets[bucketKey].metric(bucketMinutes, admin)
+			// Unqualified usage rows can create an aggregate with zero samples.
+			if filter.TrailingMinutes && bucketMetrics.RequestCount == 0 {
+				continue
+			}
 			applyIgnoredErrors(&bucketMetrics, ignoredByDimBucket[key][bucketKey])
 			row.Buckets = append(row.Buckets, service.ChannelMonitorV2TrendPoint{BucketStart: bucketStart, Metrics: bucketMetrics, Health: service.ChannelMonitorV2HealthForWithThresholds(bucketMetrics, cfg.HealthThresholds)})
 		}
@@ -664,7 +705,7 @@ type channelMonitorV2GroupInfo struct {
 }
 
 func (r *channelMonitorV2Repository) listActiveGroupIDs(ctx context.Context) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id FROM groups WHERE deleted_at IS NULL AND status = 'active' ORDER BY id`)
+	rows, err := r.matrixReader().QueryContext(ctx, `SELECT id FROM groups WHERE deleted_at IS NULL AND status = 'active' ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -685,7 +726,7 @@ func (r *channelMonitorV2Repository) loadChannelMonitorV2GroupInfo(ctx context.C
 	if len(groupIDs) == 0 {
 		return out, nil
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT id, COALESCE(name, ''), lower(COALESCE(NULLIF(TRIM(platform), ''), 'unknown')) FROM groups WHERE id = ANY($1) AND deleted_at IS NULL AND status = 'active'`, pq.Array(groupIDs))
+	rows, err := r.matrixReader().QueryContext(ctx, `SELECT id, COALESCE(name, ''), lower(COALESCE(NULLIF(TRIM(platform), ''), 'unknown')) FROM groups WHERE id = ANY($1) AND deleted_at IS NULL AND status = 'active'`, pq.Array(groupIDs))
 	if err != nil {
 		return nil, err
 	}
@@ -970,12 +1011,12 @@ func (r *channelMonitorV2Repository) loadFacts(ctx context.Context, filter servi
 		} else {
 			args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = channelMonitorV2DateBinExpr("m.bucket_start")
+			bucketExpr = channelMonitorV2BucketExpr(filter, "m.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
 	query := `SELECT ` + bucketExpr + `,m.platform,m.group_id,COALESCE(g.name,''),m.model,SUM(m.success_requests),SUM(m.error_requests),SUM(m.upstream_affected_requests),SUM(m.upstream_attempt_count),SUM(m.input_tokens),SUM(m.output_tokens),SUM(m.cache_creation_tokens),SUM(m.cache_read_tokens),SUM(m.cache_sample_read_tokens),SUM(m.cache_sample_prompt_tokens),SUM(m.ttft_sum_ms),SUM(m.ttft_count),SUM(m.duration_sum_ms),SUM(m.duration_count) FROM ` + channelMonitorV2MetricsTable(filter) + ` m LEFT JOIN groups g ON g.id=NULLIF(m.group_id,0) ` + where + ` GROUP BY ` + group
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.matrixReader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1012,11 +1053,11 @@ func (r *channelMonitorV2Repository) loadHistograms(ctx context.Context, filter 
 			args = []any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}
 			args = append(args, oldArgs...)
 			where = shiftSQLPlaceholders(where, 1)
-			bucketExpr = channelMonitorV2DateBinExpr("h.bucket_start")
+			bucketExpr = channelMonitorV2BucketExpr(filter, "h.bucket_start")
 			group = bucketExpr + "," + group
 		}
 	}
-	rows, err := r.db.QueryContext(ctx, `SELECT `+bucketExpr+`,h.platform,h.group_id,h.model,h.user_id,h.metric,h.upper_bound_ms,SUM(h.sample_count) FROM `+channelMonitorV2HistogramTable(filter)+` h `+where+` GROUP BY `+group, args...)
+	rows, err := r.matrixReader().QueryContext(ctx, `SELECT `+bucketExpr+`,h.platform,h.group_id,h.model,h.user_id,h.metric,h.upper_bound_ms,SUM(h.sample_count) FROM `+channelMonitorV2HistogramTable(filter)+` h `+where+` GROUP BY `+group, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1036,9 +1077,9 @@ func (r *channelMonitorV2Repository) loadHistograms(ctx context.Context, filter 
 
 func (r *channelMonitorV2Repository) GetAggregationWatermark(ctx context.Context) (*service.ChannelMonitorV2AggregationWatermark, error) {
 	var usageStart, errorStart, dataThrough, computed, backfill sql.NullTime
-	err := r.db.QueryRowContext(ctx, `
+	err := scanSingleRow(ctx, r.matrixReader(), `
 		SELECT usage_coverage_start, error_coverage_start, data_through, last_successful_at, backfill_cursor
-		FROM channel_monitor_v2_watermarks WHERE id = 1`).Scan(&usageStart, &errorStart, &dataThrough, &computed, &backfill)
+		FROM channel_monitor_v2_watermarks WHERE id = 1`, nil, &usageStart, &errorStart, &dataThrough, &computed, &backfill)
 	if err == sql.ErrNoRows {
 		return &service.ChannelMonitorV2AggregationWatermark{}, nil
 	}
@@ -1069,22 +1110,51 @@ func (r *channelMonitorV2Repository) loadCoverage(ctx context.Context, filter se
 	if err != nil {
 		return nil, err
 	}
+	return channelMonitorV2CoverageAt(filter, wm, time.Now().UTC()), nil
+}
+
+func channelMonitorV2CoverageAt(filter service.ChannelMonitorV2Filter, wm *service.ChannelMonitorV2AggregationWatermark, now time.Time) *service.ChannelMonitorV2Coverage {
 	if wm == nil {
 		wm = &service.ChannelMonitorV2AggregationWatermark{}
 	}
-	bootstrap := service.ChannelMonitorV2BootstrapProgress(time.Now().UTC(), wm.BackfillCursor, wm.HasData)
-	if !wm.HasData || wm.DataThrough.IsZero() || wm.LastSuccessfulAt.IsZero() {
+	ready := wm.HasData && !wm.DataThrough.IsZero() && !wm.LastSuccessfulAt.IsZero()
+	through := wm.DataThrough
+	if filter.TrailingMinutes {
+		// For the 02:55 label, read [02:51,02:56). At 02:55 four full
+		// minutes are available; 02:55 itself contributes after 02:56. Do
+		// not advance to a label before at least one of its minutes is covered.
+		span := filter.End.Sub(filter.Start)
+		latestLabel := now.UTC().Truncate(filter.Bucket)
+		if ready {
+			through = through.UTC().Truncate(time.Minute)
+			if current := now.UTC().Truncate(time.Minute); through.After(current) {
+				through = current
+			}
+			lastWithData := through.Add(filter.Bucket - 2*time.Minute).Truncate(filter.Bucket)
+			if lastWithData.Before(latestLabel) {
+				latestLabel = lastWithData
+			}
+		}
+		filter.End = latestLabel.Add(time.Minute)
+		filter.Start = filter.End.Add(-span)
+	}
+	bootstrap := service.ChannelMonitorV2BootstrapProgress(now, wm.BackfillCursor, wm.HasData)
+	if !ready {
+		through := filter.Start
+		if filter.TrailingMinutes {
+			through = time.Time{}
+		}
 		return &service.ChannelMonitorV2Coverage{
 			RequestedStart:        filter.Start,
 			RequestedEnd:          filter.End,
 			CoverageStart:         filter.End,
-			DataThrough:           filter.Start,
+			DataThrough:           through,
 			ComputedAt:            time.Time{},
 			AggregationLagSeconds: 0,
 			CoverageComplete:      false,
 			BucketSeconds:         int(filter.Bucket.Seconds()),
 			Bootstrap:             bootstrap,
-		}, nil
+		}
 	}
 	coverageStart := filter.Start
 	if !wm.UsageCoverageStart.IsZero() && wm.UsageCoverageStart.After(coverageStart) {
@@ -1093,14 +1163,23 @@ func (r *channelMonitorV2Repository) loadCoverage(ctx context.Context, filter se
 	if !wm.ErrorCoverageStart.IsZero() && wm.ErrorCoverageStart.After(coverageStart) {
 		coverageStart = wm.ErrorCoverageStart
 	}
-	through := filter.End
-	if !wm.DataThrough.IsZero() && wm.DataThrough.Before(through) {
-		through = wm.DataThrough
+	if !filter.TrailingMinutes && filter.End.Before(through) {
+		through = filter.End
+	}
+	if filter.TrailingMinutes {
+		// Minute facts and their histograms/error categories have a shorter TTL
+		// than 5m rollups. Do not promise history the query cannot read.
+		if cutoff := channelMonitorV2RetentionCutoff(now, channelMonitorV2RetentionMetrics1m); cutoff.After(coverageStart) {
+			coverageStart = cutoff
+		}
+		if wm.UsageCoverageStart.IsZero() || wm.ErrorCoverageStart.IsZero() {
+			coverageStart = filter.End
+		}
 	}
 	computedAt := wm.LastSuccessfulAt
 	lag := int64(0)
 	if !through.IsZero() {
-		lag = int64(time.Since(through).Seconds())
+		lag = int64(now.Sub(through).Seconds())
 		if lag < 0 {
 			lag = 0
 		}
@@ -1119,7 +1198,7 @@ func (r *channelMonitorV2Repository) loadCoverage(ctx context.Context, filter se
 		CoverageComplete:      channelMonitorV2HistoryCoverageComplete(coverageStart, filter.Start),
 		BucketSeconds:         int(filter.Bucket.Seconds()),
 		Bootstrap:             bootstrap,
-	}, nil
+	}
 }
 
 // channelMonitorV2HistoryCoverageComplete is true when aggregated history
@@ -1132,7 +1211,17 @@ func channelMonitorV2HistoryCoverageComplete(coverageStart, filterStart time.Tim
 	return !coverageStart.After(filterStart)
 }
 
+func channelMonitorV2BucketExpr(filter service.ChannelMonitorV2Filter, column string) string {
+	if filter.TrailingMinutes {
+		return "date_bin($1::interval," + column + ",TIMESTAMPTZ '1970-01-01 00:01:00+00')"
+	}
+	return channelMonitorV2DateBinExpr(column)
+}
+
 func channelMonitorV2FixedBucketSeconds(filter service.ChannelMonitorV2Filter) int {
+	if filter.TrailingMinutes {
+		return 0 // :01-aligned slots must read minute facts, not the :00 rollups.
+	}
 	seconds := int(filter.Bucket.Seconds())
 	switch seconds {
 	case 300, 3600, 43200, 86400:
@@ -1472,7 +1561,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCounts(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
+		bucketExpr = channelMonitorV2BucketExpr(filter, "e.bucket_start")
 		groupBy = bucketExpr + ", e.platform, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)
@@ -1568,7 +1657,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCountsByMatrixKey(
 	if filter.Bucket > 0 && bucketSeconds == 0 {
 		args = append([]any{fmt.Sprintf("%d seconds", int(filter.Bucket.Seconds()))}, args...)
 		where = shiftSQLPlaceholders(where, 1)
-		bucketExpr = channelMonitorV2DateBinExpr("e.bucket_start")
+		bucketExpr = channelMonitorV2BucketExpr(filter, "e.bucket_start")
 		groupSQL = bucketExpr + ", e.platform, e.group_id, e.model"
 	}
 	args = append(args, pq.Array(cfg.IgnoredErrorCategories), service.ChannelMonitorV2TaxonomyVersion)
@@ -1581,7 +1670,7 @@ func (r *channelMonitorV2Repository) loadIgnoredErrorCountsByMatrixKey(
 		 GROUP BY %s`,
 		bucketExpr, where, catIdx, taxIdx, groupSQL,
 	)
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.matrixReader().QueryContext(ctx, query, args...)
 	if err != nil {
 		return byDimBucket, byDim, err
 	}

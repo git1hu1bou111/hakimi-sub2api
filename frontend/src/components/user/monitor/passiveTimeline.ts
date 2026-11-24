@@ -7,11 +7,40 @@ const ranges = {
   '30d': { length: 30, seconds: 86400 },
 }
 
-export function passiveTimelineWindow(range: MonitorRange, coverage: MonitorCoverage | undefined, receivedAt: number) {
+export const minuteMs = 60_000
+
+interface TrailingCoverage {
+  compatible: boolean
+  ready: boolean
+  from: number
+  through: number
+}
+
+export interface PassiveTimelineWindow {
+  start: number
+  step: number
+  length: number
+  trailing?: TrailingCoverage
+}
+
+export function passiveTimelineWindow(range: MonitorRange, coverage: MonitorCoverage | undefined, receivedAt: number): PassiveTimelineWindow {
   const { length, seconds } = ranges[range]
   const step = seconds * 1000
   const requestedStart = Date.parse(coverage?.requested_start ?? '')
   const requestedEnd = Date.parse(coverage?.requested_end ?? '')
+  if (range === '90m') {
+    // Trailing windows start one minute after a five-minute mark. Legacy
+    // matrices use different minute membership and cannot populate this grid.
+    const anchoredStart = requestedStart % step === minuteMs ? requestedStart : requestedEnd - length * step
+    const compatible = anchoredStart > 0 && anchoredStart % step === minuteMs
+    const through = Date.parse(coverage?.data_through ?? '')
+    const from = Date.parse(coverage?.coverage_start ?? '')
+    const ready = Date.parse(coverage?.computed_at ?? '') > 0 && through > 0 && from > 0
+    return {
+      start: compatible ? anchoredStart : Math.floor(receivedAt / step) * step + minuteMs - length * step,
+      step, length, trailing: { compatible, ready, from, through },
+    }
+  }
   // Older responses can omit either bound. Reconstruct the server's UTC grid
   // at receipt time when neither bound is available.
   const end = Number.isFinite(requestedEnd)
@@ -22,5 +51,3 @@ export function passiveTimelineWindow(range: MonitorRange, coverage: MonitorCove
     : end - length * step
   return { start, step, length }
 }
-
-export type PassiveTimelineWindow = ReturnType<typeof passiveTimelineWindow>

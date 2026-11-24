@@ -18,6 +18,43 @@ type channelMonitorV2GroupAuthorizerStub struct {
 	calls  []int64
 }
 
+type channelMonitorV2MatrixCapture struct {
+	service.ChannelMonitorV2Repository
+	filter service.ChannelMonitorV2Filter
+}
+
+func (s *channelMonitorV2MatrixCapture) GetConfig(context.Context) (*service.ChannelMonitorV2Config, error) {
+	return &service.ChannelMonitorV2Config{Enabled: true}, nil
+}
+
+func (s *channelMonitorV2MatrixCapture) GetMatrix(_ context.Context, filter service.ChannelMonitorV2Filter, _ service.ChannelMonitorV2Config, _ service.ChannelMonitorV2GroupBy, _ bool) (*service.ChannelMonitorV2Matrix, error) {
+	s.filter = filter
+	return &service.ChannelMonitorV2Matrix{}, nil
+}
+
+func TestChannelMonitorV2TrailingMinutesOptInIsScopedToPublic90mGroupMatrix(t *testing.T) {
+	for _, test := range []struct {
+		query           string
+		admin, expected bool
+	}{
+		{"range=90m&group_by=platform_group&trailing_minutes=true", false, true},
+		{"range=90m&group_by=platform_group", false, false},
+		{"range=24h&group_by=platform_group&trailing_minutes=true", false, false},
+		{"range=90m&group_by=platform&trailing_minutes=true", false, false},
+		{"range=90m&group_by=platform_group&trailing_minutes=true", true, false},
+	} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/channel-monitor-v2/matrix?"+test.query, nil)
+		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 42})
+		repo := &channelMonitorV2MatrixCapture{}
+		h := &ChannelMonitorV2Handler{service: service.NewChannelMonitorV2Service(repo), apiKeyService: &channelMonitorV2GroupAuthorizerStub{}}
+		h.matrix(c, test.admin)
+		require.Equal(t, http.StatusOK, recorder.Code, test.query)
+		require.Equal(t, test.expected, repo.filter.TrailingMinutes, test.query)
+	}
+}
+
 func (s *channelMonitorV2GroupAuthorizerStub) GetAvailableGroups(_ context.Context, userID int64) ([]service.Group, error) {
 	s.calls = append(s.calls, userID)
 	return s.groups, s.err
