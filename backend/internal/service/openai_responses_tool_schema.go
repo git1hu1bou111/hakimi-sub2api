@@ -39,7 +39,32 @@ func shouldSanitizeOpenAIResponsesToolSchemaPatterns(platform string) bool {
 	return platform == PlatformOpenAI
 }
 
+// OpenAI's two compatibility policies share one scoped walk and one output
+// allocation. Only valid, bounded inputs use this path; all error and limit
+// behavior remains in the original sequential implementation below.
 func sanitizeOpenAIResponsesToolSchemasForPlatform(body []byte, platform string) ([]byte, bool, error) {
+	if platform == PlatformOpenAI && len(body) > 0 && len(body) <= openAIResponsesToolSchemaMaxBodySize/2 &&
+		openAIResponsesBodyMayContainUnsupportedRegex(body) && utf8.Valid(body) && json.Valid(body) {
+		p := openAIResponsesToolSchemaParser{body: body, validated: true, options: openAIResponsesToolSchemaOptions{
+			replaceNullParameterTypes: true, injectObjectUnionRootObjectType: true,
+			dropNullRequired: true, removeUnsupportedRegexPatterns: true,
+		}}
+		if err := p.parseValue(openAIResponsesToolSchemaDocument, false, 0); err == nil {
+			p.skipWhitespace()
+			if p.pos == len(body) {
+				if len(p.edits) == 0 {
+					return body, false, nil
+				}
+				if out, changed, err := applyOpenAIResponsesToolSchemaEdits(body, p.edits); err == nil {
+					return out, changed, nil
+				}
+			}
+		}
+	}
+	return sanitizeOpenAIResponsesToolSchemasForPlatformSequential(body, platform)
+}
+
+func sanitizeOpenAIResponsesToolSchemasForPlatformSequential(body []byte, platform string) ([]byte, bool, error) {
 	normalized := body
 	changed := false
 	if shouldRepairOpenAIResponsesNullToolSchemaType(platform) {
@@ -200,6 +225,7 @@ type openAIResponsesToolSchemaEdit struct {
 }
 
 type openAIResponsesToolSchemaParser struct {
+	validated bool // json.Valid has already checked every string and token in body.
 	body      []byte
 	pos       int
 	options   openAIResponsesToolSchemaOptions
@@ -220,7 +246,7 @@ func sanitizeOpenAIResponsesToolSchemas(
 	if !utf8.Valid(body) {
 		return nil, false, fmt.Errorf("sanitize OpenAI Responses tool schemas: invalid UTF-8")
 	}
-	p := openAIResponsesToolSchemaParser{body: body, options: options}
+	p := openAIResponsesToolSchemaParser{body: body, options: options, validated: json.Valid(body)}
 	if err := p.parseValue(openAIResponsesToolSchemaDocument, false, 0); err != nil {
 		if errors.Is(err, errOpenAIResponsesToolSchemaLimit) {
 			return body, false, nil
@@ -231,7 +257,7 @@ func sanitizeOpenAIResponsesToolSchemas(
 	if p.pos != len(body) {
 		return nil, false, fmt.Errorf("sanitize OpenAI Responses tool schemas: trailing data at byte %d", p.pos)
 	}
-	if !json.Valid(body) {
+	if !p.validated && !json.Valid(body) {
 		return nil, false, fmt.Errorf("sanitize OpenAI Responses tool schemas: invalid JSON")
 	}
 	if len(p.edits) == 0 {
@@ -259,7 +285,7 @@ func (p *openAIResponsesToolSchemaParser) parseValue(
 		}
 	}
 	if context == openAIResponsesToolSchemaInputItem && p.body[p.pos] == '{' {
-		probe := openAIResponsesToolSchemaParser{body: p.body, pos: p.pos}
+		probe := openAIResponsesToolSchemaParser{body: p.body, pos: p.pos, validated: p.validated}
 		if err := probe.parseValue(openAIResponsesToolSchemaTypeProbe, false, depth); err != nil {
 			return err
 		}
@@ -269,7 +295,10 @@ func (p *openAIResponsesToolSchemaParser) parseValue(
 		case "additional_tools":
 			context = openAIResponsesToolSchemaToolCarrier
 		default:
-			context = openAIResponsesToolSchemaSkip
+			// The probe already validated/skipped this complete non-tool item,
+			// including the same depth limit. A second opaque traversal adds no edits.
+			p.pos = probe.pos
+			return nil
 		}
 	}
 	switch p.body[p.pos] {
@@ -626,6 +655,28 @@ func openAIResponsesToolSchemaChildContext(
 }
 
 func (p *openAIResponsesToolSchemaParser) parseString() (int, int, error) {
+	if p.validated && p.pos < len(p.body) && p.body[p.pos] == '"' {
+		start := p.pos
+		cursor := start + 1
+		for cursor < len(p.body) {
+			relative := bytes.IndexByte(p.body[cursor:], '"')
+			if relative < 0 {
+				break
+			}
+			end := cursor + relative
+			slashes := 0
+			for i := end - 1; i > start && p.body[i] == '\\'; i-- {
+				slashes++
+			}
+			if slashes%2 == 0 {
+				p.pos = end + 1
+				return start, p.pos, nil
+			}
+			cursor = end + 1
+		}
+		// Defensive fallback: validated JSON must have a terminating quote.
+	}
+
 	if p.pos >= len(p.body) || p.body[p.pos] != '"' {
 		return 0, 0, p.syntaxError("expected string")
 	}
