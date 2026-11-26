@@ -576,19 +576,28 @@
               <span v-else class="text-gray-400">{{ t('keys.selectGroup') }}</span>
             </template>
             <template #option="{ option, selected }">
-              <GroupOptionItem
-                :name="(option as unknown as GroupOption).label"
-                :platform="(option as unknown as GroupOption).platform"
-                :subscription-type="(option as unknown as GroupOption).subscriptionType"
-                :rate-multiplier="(option as unknown as GroupOption).rate"
-                :user-rate-multiplier="(option as unknown as GroupOption).userRate"
-                :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
-                :peak-start="(option as unknown as GroupOption).peakStart"
-                :peak-end="(option as unknown as GroupOption).peakEnd"
-                :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
-                :description="(option as unknown as GroupOption).description"
-                :selected="selected"
-              />
+              <div :class="showGroupHealth ? 'min-w-0 flex-1' : 'contents'">
+                <GroupOptionItem
+                  :name="(option as unknown as GroupOption).label"
+                  :platform="(option as unknown as GroupOption).platform"
+                  :subscription-type="(option as unknown as GroupOption).subscriptionType"
+                  :rate-multiplier="(option as unknown as GroupOption).rate"
+                  :user-rate-multiplier="(option as unknown as GroupOption).userRate"
+                  :peak-rate-enabled="(option as unknown as GroupOption).peakRateEnabled"
+                  :peak-start="(option as unknown as GroupOption).peakStart"
+                  :peak-end="(option as unknown as GroupOption).peakEnd"
+                  :peak-rate-multiplier="(option as unknown as GroupOption).peakRateMultiplier"
+                  :description="(option as unknown as GroupOption).description"
+                  :selected="selected"
+                />
+                <KeyGroupHealth
+                  v-if="showGroupHealth"
+                  :rows="rowsForGroup((option as unknown as GroupOption).value)"
+                  :coverage="healthCoverage"
+                  :received-at="healthReceivedAt"
+                  :state="healthState"
+                />
+              </div>
             </template>
           </Select>
         </div>
@@ -1214,6 +1223,9 @@
 
 <script setup lang="ts">
 import IntelligenceTestModal from '@/components/keys/IntelligenceTestModal.vue'
+import KeyGroupHealth from '@/components/keys/KeyGroupHealth.vue'
+import { useKeyGroupHealth } from '@/composables/useKeyGroupHealth'
+import { isChannelMonitorV2Mode } from '@/utils/featureFlags'
 import { supportsIntelligence } from '@/api/intelligence'
 	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
@@ -1415,6 +1427,8 @@ const filterGroupId = ref<string | number>('')
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
+const showGroupHealth = computed(() => showCreateModal.value && isChannelMonitorV2Mode())
+const { rowsForGroup, coverage: healthCoverage, receivedAt: healthReceivedAt, state: healthState } = useKeyGroupHealth(showGroupHealth)
 const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)

@@ -13,6 +13,8 @@ const {
   getDashboardApiKeysUsage,
   getAvailableGroups,
   getUserGroupRates,
+  getHealthMatrix,
+  monitorSettings,
   showError,
   showSuccess,
   copyToClipboard,
@@ -25,6 +27,8 @@ const {
   getDashboardApiKeysUsage: vi.fn(),
   getAvailableGroups: vi.fn(),
   getUserGroupRates: vi.fn(),
+  getHealthMatrix: vi.fn(),
+  monitorSettings: { channel_monitor_enabled: true, channel_monitor_mode: 'v1' },
   showError: vi.fn(),
   showSuccess: vi.fn(),
   copyToClipboard: vi.fn(),
@@ -82,7 +86,17 @@ vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
     showError,
     showSuccess,
+    cachedPublicSettings: monitorSettings,
   }),
+}))
+
+vi.mock('@/stores/auth', () => ({
+  useAuthStore: () => ({ user: { id: 1 }, token: 'test-token', isAuthenticated: true }),
+}))
+
+vi.mock('@/api/channelMonitorV2', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/channelMonitorV2')>(),
+  getMatrix: getHealthMatrix,
 }))
 
 vi.mock('@/stores/onboarding', () => ({
@@ -103,6 +117,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
+      locale: { value: 'en-GB' },
       t: (key: string) => messages[key] ?? key,
     }),
   }
@@ -223,7 +238,7 @@ const IconStub = {
   template: '<span data-test="icon">{{ name }}</span>',
 }
 
-const mountView = async () => {
+const mountView = async ({ realGroupSelect = false } = {}) => {
   const wrapper = mount(KeysView, {
     global: {
       stubs: {
@@ -238,14 +253,14 @@ const mountView = async () => {
         },
         ConfirmDialog: true,
         EmptyState: true,
-        Select: SelectStub,
+        Select: realGroupSelect ? false : SelectStub,
         SearchInput: SearchInputStub,
         Icon: IconStub,
         UseKeyModal: true,
         BulkEditKeysModal: true,
         EndpointPopover: true,
-        GroupBadge: true,
-        GroupOptionItem: true,
+        GroupBadge: !realGroupSelect,
+        GroupOptionItem: !realGroupSelect,
         Teleport: true,
       },
     },
@@ -272,6 +287,8 @@ const getButtonByText = (wrapper: VueWrapper, text: string) => {
 describe('user KeysView column settings', () => {
   beforeEach(() => {
     localStorage.clear()
+    monitorSettings.channel_monitor_mode = 'v1'
+    getHealthMatrix.mockReset()
 
     listKeys.mockReset()
     updateKey.mockReset()
@@ -576,10 +593,20 @@ describe('user KeysView column settings', () => {
     const groupSelect = (wrapper: VueWrapper) => wrapper.findComponent('[data-tour="key-form-group"]')
     const optionIds = (wrapper: VueWrapper) => groupSelect(wrapper).props('options').map((option: { value: number }) => option.value)
     const chooseProvider = (wrapper: VueWrapper, value: string) => wrapper.get(`input[name="key-provider"][value="${value}"]`).setValue()
-    const openCreate = async () => {
-      const wrapper = await mountView()
+    const openCreate = async (options?: Parameters<typeof mountView>[0]) => {
+      const wrapper = await mountView(options)
       await wrapper.get('[data-tour="keys-create-btn"]').trigger('click')
       return wrapper
+    }
+    const enableGroupHealth = () => {
+      monitorSettings.channel_monitor_mode = 'v2'
+      localStorage.setItem('auth_user', JSON.stringify({ id: 1 }))
+      localStorage.setItem('auth_token', 'test-token')
+    }
+
+    const expectNoGroupHealth = (wrapper: VueWrapper) => {
+      expect(wrapper.text()).not.toContain('keys.groupHealth.')
+      expect(wrapper.find('[aria-label="keys.groupHealth.history"]').exists()).toBe(false)
     }
 
     beforeEach(() => {
@@ -597,6 +624,84 @@ describe('user KeysView column settings', () => {
       await chooseProvider(wrapper, 'other')
       expect(optionIds(wrapper)).toEqual([7, 8, 9, 10, 11, 12])
       expect(wrapper.findAllComponents({ name: 'Select' })[0].props('options')).toHaveLength(14)
+    })
+
+    it('only shows channel metrics inside expanded create options, including while data arrives', async () => {
+      enableGroupHealth()
+      const start = '2026-11-25T00:01:00Z'
+      const end = '2026-11-25T01:31:00Z'
+      const matrix = {
+        coverage: { requested_start: start, requested_end: end, coverage_start: start, data_through: end, computed_at: end, bucket_seconds: 300 },
+        items: [{
+          platform: 'anthropic', group_id: 1,
+          buckets: [{ bucket_start: start, metrics: { error_rate: 0.02, cache_rate: 0.75 }, health: { overall: 'healthy' } }],
+        }],
+      }
+      let resolveMatrix!: (response: typeof matrix) => void
+      getHealthMatrix.mockReturnValue(new Promise(resolve => { resolveMatrix = resolve }))
+      const wrapper = await openCreate({ realGroupSelect: true })
+      const trigger = wrapper.get('button#key-form-group')
+      expect(trigger.text()).toContain('keys.selectGroup')
+      expectNoGroupHealth(wrapper)
+
+      await trigger.trigger('click')
+      const option = wrapper.get('[role="option"]')
+      expect(option.text()).toContain('Shared group 1')
+      expect(option.text()).toContain('keys.groupHealth.loading')
+      await option.trigger('click')
+      expect(trigger.text()).toContain('Shared group 1')
+      expect(trigger.text()).toContain('1x')
+      expectNoGroupHealth(wrapper)
+
+      resolveMatrix(matrix)
+      await flushPromises()
+      expectNoGroupHealth(wrapper)
+      await trigger.trigger('click')
+      const selected = wrapper.get('[role="option"][aria-selected="true"]')
+      expect(selected.text()).toContain('98.0%')
+      expect(selected.text()).toContain('75.0%')
+      expect(selected.findAll('[aria-label="keys.groupHealth.history"] > span')).toHaveLength(18)
+      await trigger.trigger('click')
+      expectNoGroupHealth(wrapper)
+      wrapper.unmount()
+    })
+
+    it('keeps the table filter and edit menu free of channel metrics', async () => {
+      enableGroupHealth()
+      const wrapper = await mountView({ realGroupSelect: true })
+      const filter = getButtonByText(wrapper, 'All Groups')
+      await filter.trigger('click')
+      expect(wrapper.get('[role="listbox"]').text()).toContain('Shared group 12')
+      expectNoGroupHealth(wrapper)
+      await filter.trigger('click')
+
+      await getButtonByText(wrapper, 'common.edit').trigger('click')
+      await wrapper.get('button#key-form-group').trigger('click')
+      expect(wrapper.findAll('[role="option"]')).toHaveLength(availableGroups.length)
+      expectNoGroupHealth(wrapper)
+      expect(getHealthMatrix).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it('keeps permitted groups selectable and creates the key when channel status is unavailable', async () => {
+      enableGroupHealth()
+      getHealthMatrix.mockRejectedValue(new Error('Monitor unavailable'))
+      const wrapper = await openCreate({ realGroupSelect: true })
+      await flushPromises()
+      expect(getHealthMatrix).toHaveBeenCalledOnce()
+
+      await wrapper.get('button#key-form-group').trigger('click')
+      const option = wrapper.get('[role="option"]')
+      expect(option.text()).toContain('keys.groupHealth.error')
+      await option.trigger('click')
+      expectNoGroupHealth(wrapper)
+      await wrapper.get('[data-tour="key-form-name"]').setValue('Customer key')
+      vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), group_id: 1 })
+      await wrapper.get('#key-form').trigger('submit')
+      await flushPromises()
+      expect(keysAPI.create).toHaveBeenCalledOnce()
+      expect(vi.mocked(keysAPI.create).mock.calls[0].slice(0, 2)).toEqual(['Customer key', 1])
+      wrapper.unmount()
     })
 
     it('clears the previous group on provider change and submits only the newly selected group', async () => {
