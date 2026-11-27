@@ -21,7 +21,7 @@ func sanitizeOpenAIResponsesOrphanToolOutputs(reqBody map[string]any, input []an
 		if !ok {
 			continue
 		}
-		itemType := strings.TrimSpace(firstNonEmptyString(item["type"]))
+		itemType := strings.TrimSpace(mapToolContinuationType(item))
 		if itemType == "item_reference" {
 			if id := strings.TrimSpace(firstNonEmptyString(item["id"])); id != "" {
 				referenceIDs[id] = struct{}{}
@@ -40,7 +40,7 @@ func sanitizeOpenAIResponsesOrphanToolOutputs(reqBody map[string]any, input []an
 	normalized := make([]any, 0, len(input))
 	for _, rawItem := range input {
 		item, ok := rawItem.(map[string]any)
-		if !ok || !isCodexToolCallOutputItemType(strings.TrimSpace(firstNonEmptyString(item["type"]))) {
+		if !ok || !isCodexToolCallOutputItemType(mapToolContinuationType(item)) {
 			normalized = append(normalized, rawItem)
 			continue
 		}

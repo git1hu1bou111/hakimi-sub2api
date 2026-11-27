@@ -11,10 +11,16 @@ import (
 
 var codexSelectedPageName = regexp.MustCompile(`^codex_apps_selected_page_part_([1-9][0-9]*)_of_([1-9][0-9]*)$`)
 
+// Codex's TokenBudgetContext uses either UUIDv7 or a generated "window" ID
+// padded to groups of three digits. Optional context hints follow these lines.
+const codexContextWindowID = `(?:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|window(?:[0-9]{3}){1,7})`
+
+var codexThreadHint = regexp.MustCompile(`^Agent name: /(?:root(?:/[a-z0-9_]+)*|morpheus)\nFirst context window id: ` + codexContextWindowID + `\nCurrent context window id: ` + codexContextWindowID + `(?:\n|$)`)
+
 // Codex injects external context as standalone outputs, without a model tool call.
 // Use the legacy user-message representation for HTTP Responses interoperability.
 func normalizeCodexUntrustedContext(body []byte) ([]byte, bool) {
-	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context") || !hasUniqueJSONMembers(body) {
+	if !mayContainCodexCallOutputCandidate(body, "codex_apps_open_page", "codex_apps_selected_page_part_", "browser_info", "goal_objective", "untrusted_context", "thread_hint") || !hasUniqueJSONMembers(body) {
 		return body, false
 	}
 	var request map[string]json.RawMessage
@@ -85,6 +91,8 @@ func normalizeCodexUntrustedContext(body []byte) ([]byte, bool) {
 
 func validCodexUntrustedContext(name, output string) bool {
 	switch name {
+	case "thread_hint":
+		return codexThreadHint.MatchString(output)
 	case "browser_info", "goal_objective", "untrusted_context":
 		return strings.TrimSpace(output) != ""
 	default:

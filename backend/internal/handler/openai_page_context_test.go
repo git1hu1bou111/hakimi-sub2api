@@ -54,6 +54,50 @@ func TestNormalizeCodexPageContextFirstMessage(t *testing.T) {
 	require.Equal(t, got, again)
 }
 
+func TestNormalizeCodexThreadHint(t *testing.T) {
+	const window = "019acc01-0000-7000-8000-000000000001"
+	for _, output := range []string{
+		"Agent name: /root\nFirst context window id: " + window + "\nCurrent context window id: " + window,
+		"Agent name: /root/worker_2\nFirst context window id: window123\nCurrent context window id: window123456\nPrevious context window id: window001\nadditional notes",
+	} {
+		hint := pageContextItem("thread_hint", output)
+		delete(hint, "id") // The Codex context item has neither an item ID nor a call ID.
+		body := pageContextRequest(t, map[string]any{"type": "compaction", "encrypted_content": "compact_fixture"}, hint)
+		require.True(t, service.ValidateFunctionCallOutputContextBytes(body).HasFunctionCallOutputMissingCallID)
+		got, changed := normalizeCodexUntrustedContext(body)
+		require.True(t, changed)
+		require.False(t, service.ValidateFunctionCallOutputContextBytes(got).HasFunctionCallOutput)
+		require.JSONEq(t, gjson.GetBytes(body, "input.0").Raw, gjson.GetBytes(got, "input.0").Raw)
+		item := gjson.GetBytes(got, "input.1")
+		require.Equal(t, "user", item.Get("role").String())
+		require.Equal(t, "input_text", item.Get("content.0.type").String())
+		require.Equal(t, "<external_thread_hint>"+output+"</external_thread_hint>", item.Get("content.0.text").String())
+		require.False(t, item.Get("call_id").Exists())
+	}
+}
+
+func TestNormalizeCodexThreadHintPreservesUnrelatedOutputs(t *testing.T) {
+	const header = "Agent name: /root\nFirst context window id: window001\nCurrent context window id: "
+	for _, override := range []map[string]any{
+		{"output": "ordinary tool result"},
+		{"output": header + "window1"},
+		{"output": header + "window001oops"},
+		{"namespace": "other"},
+		{"call_id": "call_real"},
+		{"call_id": nil},
+		{"name": "other_tool"},
+	} {
+		item := pageContextItem("thread_hint", header+"window002")
+		for key, value := range override {
+			item[key] = value
+		}
+		body := pageContextRequest(t, item)
+		got, changed := normalizeCodexUntrustedContext(body)
+		require.False(t, changed, "override=%v", override)
+		require.Equal(t, body, got)
+	}
+}
+
 func TestNormalizeCodexAdditionalUntrustedContext(t *testing.T) {
 	// AdditionalContextToolOutput derives names from caller-provided context keys.
 	// Codex 0.169.0 enables this representation by default (openai/codex#60487).

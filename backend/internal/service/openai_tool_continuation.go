@@ -50,6 +50,30 @@ func isCodexToolCallOutputItemType(typ string) bool {
 	}
 }
 
+// Hosted tool search emits a call and its result with an explicit null call_id.
+// Both are replayable history. Neither asks the client to supply a tool result.
+func isToolSearchHistoryType(typ string) bool {
+	return typ == "tool_search_call" || typ == "tool_search_output"
+}
+
+func rawToolContinuationType(item gjson.Result) string {
+	typ := item.Get("type").String()
+	if isToolSearchHistoryType(typ) && item.Get("execution").Str == "server" && item.Get("call_id").Raw == "null" {
+		return ""
+	}
+	return typ
+}
+
+func mapToolContinuationType(item map[string]any) string {
+	typ, _ := item["type"].(string)
+	if isToolSearchHistoryType(typ) && item["execution"] == "server" {
+		if id, present := item["call_id"]; present && id == nil {
+			return ""
+		}
+	}
+	return typ
+}
+
 // NeedsToolContinuation 判定请求是否需要工具调用续链处理。
 // 满足以下任一信号即视为续链：previous_response_id、input 内包含工具输出/item_reference、
 // 或显式声明 tools/tool_choice。
@@ -104,7 +128,7 @@ func AnalyzeToolContinuationSignals(reqBody map[string]any) ToolContinuationSign
 		if !ok {
 			continue
 		}
-		itemType, _ := itemMap["type"].(string)
+		itemType := mapToolContinuationType(itemMap)
 		switch {
 		case isCodexToolCallContextItemType(itemType):
 			callID, _ := itemMap["call_id"].(string)
@@ -172,7 +196,7 @@ func ValidateFunctionCallOutputContextBytes(body []byte) FunctionCallOutputValid
 		if !item.IsObject() {
 			return true
 		}
-		itemType := item.Get("type").String()
+		itemType := rawToolContinuationType(item)
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
 			result.HasFunctionCallOutput = true
@@ -246,7 +270,7 @@ func AnalyzeToolCallOutputContextCoverageBytes(body []byte) ToolCallOutputContex
 		if !item.IsObject() {
 			return
 		}
-		itemType := item.Get("type").String()
+		itemType := rawToolContinuationType(item)
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
 			coverage.HasFunctionCallOutput = true
@@ -320,7 +344,7 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 		if !ok {
 			continue
 		}
-		itemType, _ := itemMap["type"].(string)
+		itemType := mapToolContinuationType(itemMap)
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
 			result.HasFunctionCallOutput = true
@@ -346,7 +370,7 @@ func ValidateFunctionCallOutputContext(reqBody map[string]any) FunctionCallOutpu
 		if !ok {
 			continue
 		}
-		itemType, _ := itemMap["type"].(string)
+		itemType := mapToolContinuationType(itemMap)
 		switch {
 		case isCodexToolCallOutputItemType(itemType):
 			callID, _ := itemMap["call_id"].(string)

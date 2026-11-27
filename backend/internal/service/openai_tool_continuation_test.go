@@ -105,6 +105,57 @@ func TestHasFunctionCallOutputMissingCallID(t *testing.T) {
 	}))
 }
 
+func TestHostedToolSearchReplayWithClientFunctionOutput(t *testing.T) {
+	// Responses can return these two server items before the client function call.
+	hostedCall := json.RawMessage(`{"type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["crm"]}}`)
+	hostedOutput := json.RawMessage(`{"type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[]}`)
+	functionOutput := json.RawMessage(`{"type":"function_call_output","call_id":"call_a","output":"done"}`)
+	items := []json.RawMessage{hostedCall, hostedOutput, json.RawMessage(`{"type":"item_reference","id":"call_a"}`), functionOutput}
+	body, err := json.Marshal(map[string]any{"input": items})
+	require.NoError(t, err)
+	var request map[string]any
+	require.NoError(t, json.Unmarshal(body, &request))
+
+	validation := ValidateFunctionCallOutputContextBytes(body)
+	require.Equal(t, validation, ValidateFunctionCallOutputContext(request))
+	require.True(t, validation.HasFunctionCallOutput)
+	require.False(t, validation.HasFunctionCallOutputMissingCallID)
+	require.True(t, validation.HasItemReferenceForAllCallIDs)
+	require.ElementsMatch(t, []string{"call_a"}, FunctionCallOutputCallIDs(request))
+	require.False(t, HasFunctionCallOutputMissingCallID(request))
+	require.True(t, AnalyzeToolCallOutputContextCoverageBytes(body).ContextCoversAllCallIDs)
+	require.False(t, sanitizeOpenAIResponsesOrphanToolOutputs(request, request["input"].([]any), false))
+
+	history := []json.RawMessage{hostedCall, hostedOutput, json.RawMessage(`{"type":"function_call","call_id":"call_a"}`)}
+	require.Equal(t, history, sanitizeOpenAIWSHistoricalReplayToolCalls(history, []json.RawMessage{functionOutput}))
+	require.True(t, openAIWSRawItemsHaveToolCallContextForOutputs(append(history, functionOutput)))
+	require.False(t, openAIWSRawItemsHasFunctionCallOutput(history[:2]))
+	require.False(t, openAIWSRawPayloadHasToolCallOutput([]byte(`{"input":`+string(hostedOutput)+`}`)))
+}
+
+func TestHostedToolSearchDoesNotCoverOrExemptClientResults(t *testing.T) {
+	for _, item := range []string{
+		`{"type":"function_call_output","execution":"server","call_id":null}`,
+		`{"type":"tool_search_output","execution":"client","call_id":null}`,
+		`{"type":"tool_search_output","call_id":null}`,
+		`{"type":"tool_search_output","execution":"server","call_id":""}`,
+		`{"type":"tool_search_output","execution":"server"}`,
+	} {
+		body := []byte(`{"input":[{"type":"tool_search_call","execution":"server","call_id":null},{"type":"tool_search_output","execution":"server","call_id":null},` + item + `]}`)
+		var request map[string]any
+		require.NoError(t, json.Unmarshal(body, &request))
+		require.True(t, ValidateFunctionCallOutputContextBytes(body).HasFunctionCallOutputMissingCallID, item)
+		require.True(t, ValidateFunctionCallOutputContext(request).HasFunctionCallOutputMissingCallID, item)
+		require.True(t, HasFunctionCallOutputMissingCallID(request), item)
+		require.False(t, AnalyzeToolCallOutputContextCoverageBytes(body).ContextCoversAllCallIDs, item)
+	}
+	body := []byte(`{"input":[{"type":"tool_search_call","execution":"server","call_id":null},{"type":"function_call_output","call_id":"call_unmatched","output":"done"}]}`)
+	validation := ValidateFunctionCallOutputContextBytes(body)
+	require.False(t, validation.HasToolCallContext)
+	require.False(t, validation.HasItemReferenceForAllCallIDs)
+	require.False(t, AnalyzeToolCallOutputContextCoverageBytes(body).ContextCoversAllCallIDs)
+}
+
 func TestHasItemReferenceForCallIDs(t *testing.T) {
 	// item_reference 需要覆盖所有 call_id 才视为可关联上下文。
 	require.False(t, HasItemReferenceForCallIDs(nil, []string{"call_1"}))

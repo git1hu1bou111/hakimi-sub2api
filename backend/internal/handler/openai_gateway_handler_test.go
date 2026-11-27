@@ -993,7 +993,7 @@ func TestOpenAIResponses_RejectsUnownedHTTPContinuation(t *testing.T) {
 	require.Contains(t, w.Body.String(), "previous_response_id is not available for this user")
 }
 
-func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceDoesNotSuggestPreviousResponseReuse(t *testing.T) {
+func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceIdentifiesMissingCallID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()
@@ -1018,8 +1018,8 @@ func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceDoesNotSuggestPreviousRes
 	h.Responses(c)
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Contains(t, w.Body.String(), "Responses WebSocket v2")
-	require.NotContains(t, w.Body.String(), "reuse previous_response_id")
+	require.Contains(t, w.Body.String(), "Copy the call_id from the corresponding tool call")
+	require.NotContains(t, w.Body.String(), "WebSocket")
 }
 
 func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testing.T) {
